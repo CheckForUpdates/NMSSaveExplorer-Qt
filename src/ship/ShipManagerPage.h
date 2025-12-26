@@ -1,0 +1,87 @@
+#pragma once
+
+#include <QJsonDocument>
+#include <QVariantList>
+#include <QWidget>
+#include <functional>
+#include <memory>
+
+class QCheckBox;
+class QComboBox;
+class QLineEdit;
+class QScrollArea;
+class LosslessJsonDocument;
+
+struct ShipEntry {
+    int index = -1;
+    QString name;
+};
+
+class ShipManagerPage : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit ShipManagerPage(QWidget *parent = nullptr);
+    bool loadFromFile(const QString &filePath, QString *errorMessage);
+    bool saveChanges(QString *errorMessage);
+    bool hasLoadedSave() const;
+    bool hasUnsavedChanges() const;
+    const QString &currentFilePath() const;
+
+signals:
+    void statusMessage(const QString &message);
+
+private:
+    void buildUi();
+    void updateActiveContext();
+    void rebuildShipList();
+    void setActiveShip(int index);
+
+    QJsonObject activePlayerState() const;
+    QJsonArray shipOwnershipArray() const;
+    QVariantList shipOwnershipPath() const;
+    void updateShipAtIndex(int index, const std::function<void(QJsonObject &)> &mutator);
+    void updateShipResource(QJsonObject &ship, const std::function<void(QJsonObject &)> &mutator);
+    void updateShipInventoryClass(QJsonObject &ship, const QString &value);
+
+    QJsonValue valueAtPath(const QJsonValue &root, const QVariantList &path) const;
+    QJsonValue setValueAtPath(const QJsonValue &root, const QVariantList &path, int depth,
+                              const QJsonValue &value) const;
+    void applyValueAtPath(const QVariantList &path, const QJsonValue &value);
+
+    void refreshShipFields(const QJsonObject &ship);
+    QString shipNameFromObject(const QJsonObject &ship) const;
+    QString shipClassFromObject(const QJsonObject &ship) const;
+    QString shipSeedFromObject(const QJsonObject &ship) const;
+    QString shipTypeFromObject(const QJsonObject &ship) const;
+    bool shipUseLegacyColours(const QJsonObject &ship) const;
+    double shipStatValue(const QJsonObject &ship, const QString &statId) const;
+    QJsonObject inventoryObjectForShip(const QJsonObject &ship) const;
+    QString formatNumber(double value) const;
+    QString formattedSeed(qulonglong seed) const;
+
+    QScrollArea *scrollArea_ = nullptr;
+    QWidget *formWidget_ = nullptr;
+    QComboBox *shipCombo_ = nullptr;
+    QLineEdit *nameField_ = nullptr;
+    QComboBox *typeCombo_ = nullptr;
+    QComboBox *classCombo_ = nullptr;
+    QLineEdit *seedField_ = nullptr;
+    QCheckBox *useOldColours_ = nullptr;
+
+    QLineEdit *healthField_ = nullptr;
+    QLineEdit *shieldField_ = nullptr;
+    QLineEdit *damageField_ = nullptr;
+    QLineEdit *shieldsField_ = nullptr;
+    QLineEdit *hyperdriveField_ = nullptr;
+    QLineEdit *maneuverField_ = nullptr;
+
+    QList<ShipEntry> ships_;
+    int activeShipIndex_ = -1;
+    bool usingExpeditionContext_ = false;
+    QJsonDocument rootDoc_;
+    std::shared_ptr<LosslessJsonDocument> losslessDoc_;
+    QString currentFilePath_;
+    bool hasUnsavedChanges_ = false;
+};

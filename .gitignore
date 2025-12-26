@@ -1,0 +1,17 @@
+# Build outputs
+/build/
+/win-build/
+
+# Generated binaries and debug artifacts (common on Windows builds)
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.tlog
+*.recipe
+*.cache
+
+# Excluded resource payloads
+/src/resources/data/
+/src/resources/icons/
