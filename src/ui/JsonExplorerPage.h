@@ -1,0 +1,77 @@
+#pragma once
+
+#include <QHash>
+#include <QJsonDocument>
+#include <QSet>
+#include <QVariant>
+#include <QWidget>
+#include <memory>
+
+#include "core/LosslessJsonDocument.h"
+
+class QPlainTextEdit;
+class QStandardItem;
+class QStandardItemModel;
+class QTreeView;
+
+class JsonExplorerPage : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit JsonExplorerPage(QWidget *parent = nullptr);
+
+    bool loadFromFile(const QString &filePath, QString *errorMessage = nullptr);
+    void setRootDoc(const QJsonDocument &doc, const QString &filePath,
+                    const std::shared_ptr<LosslessJsonDocument> &losslessDoc);
+    bool hasLoadedSave() const;
+    bool saveChanges(QString *errorMessage = nullptr);
+    bool saveAs(const QString &filePath, QString *errorMessage = nullptr);
+    bool exportJson(const QString &filePath, QString *errorMessage = nullptr) const;
+    bool hasUnsavedChanges() const;
+
+    void expandAll();
+    void collapseAll();
+
+signals:
+    void statusMessage(const QString &message);
+
+private:
+    void buildTree();
+    void populateChildren(QStandardItem *parent);
+    void addPlaceholderIfNeeded(QStandardItem *item, const QJsonValue &value);
+    QJsonValue valueAtPath(const QVariantList &path) const;
+    QJsonValue mapToReadable(const QJsonValue &value) const;
+    QJsonValue remapToShort(const QJsonValue &value) const;
+    QJsonValue setValueAtPath(const QJsonValue &root, const QVariantList &path, int depth, const QJsonValue &value) const;
+    QString pathKey(const QVariantList &path) const;
+    QString displayPath(QStandardItem *item) const;
+
+    void loadEditorForItem(QStandardItem *item);
+    bool commitEditor();
+    QString prettyPrinted(const QJsonValue &value) const;
+    void markModified(QStandardItem *item);
+    void clearModified(QStandardItem *item);
+
+    void showFindDialog();
+    void performFind(const QString &text);
+
+    void ensureMappingLoaded();
+
+    QTreeView *tree_ = nullptr;
+    QPlainTextEdit *editor_ = nullptr;
+    QStandardItemModel *model_ = nullptr;
+
+    QJsonDocument rootDoc_;
+    std::shared_ptr<LosslessJsonDocument> losslessDoc_;
+    QString currentFilePath_;
+    QStandardItem *currentItem_ = nullptr;
+    bool ignoreEditorChange_ = false;
+
+    QHash<QString, QJsonValue> originalValues_;
+    QSet<QStandardItem *> modifiedItems_;
+    QHash<QString, QString> reverseMapping_;
+
+    int lastFindIndex_ = -1;
+    QString lastSearchText_;
+};
