@@ -11,8 +11,10 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QRegularExpression>
 #include <QSizePolicy>
 #include <QPainter>
 #include <QStyleOption>
@@ -21,6 +23,9 @@
 namespace {
 constexpr int kIconSize = 72;
 const char *kMimeType = "application/x-nms-slot";
+
+QString normalizedItemId(const QJsonObject &item);
+bool isDamageSlotPlaceholderId(const QString &id);
 
 ItemType itemTypeFromValue(const QString &value)
 {
@@ -63,8 +68,24 @@ bool allowSuperchargeForTitle(const QString &title)
     return false;
 }
 
-bool isDamagedItem(const QJsonObject &item)
+bool isDamagedItem(const QJsonObject &item, const QString &inventoryTitle)
 {
+    QString id = normalizedItemId(item);
+    if (isDamageSlotPlaceholderId(id)) {
+        return true;
+    }
+
+    QJsonObject typeObj = item.value("Vn8").toObject();
+    ItemType type = itemTypeFromValue(typeObj.value("elv").toString());
+    QString lowerTitle = inventoryTitle.trimmed().toLower();
+    bool isTechContext = (type == ItemType::Technology)
+        || lowerTitle.contains("technology")
+        || lowerTitle.contains("tech");
+
+    if (!isTechContext) {
+        return false;
+    }
+
     if (item.contains("eVk") && item.value("eVk").toDouble(0.0) > 0.0) {
         return true;
     }
@@ -95,6 +116,75 @@ bool isDamageSlotPlaceholderId(const QString &id)
 
     for (const QString &prefix : kDamagePrefixes) {
         if (id.startsWith(prefix)) {
+            return true;
+        }
+    }
+    static const QRegularExpression kDamageSuffix(QStringLiteral(".*_DMG\\d+$"),
+                                                  QRegularExpression::CaseInsensitiveOption);
+    if (kDamageSuffix.match(id).hasMatch()) {
+        return true;
+    }
+    return false;
+}
+
+QString specialSlotTypeValue(const QJsonObject &special)
+{
+    QJsonValue value = special.value("QA1");
+    if (value.isUndefined()) {
+        value = special.value("InventorySpecialSlotType");
+    }
+    if (value.isString()) {
+        return value.toString().trimmed();
+    }
+    if (value.isDouble()) {
+        return QString::number(static_cast<int>(value.toDouble()));
+    }
+    return QString();
+}
+
+bool isSuperchargedSlot(const QJsonObject &special)
+{
+    QJsonValue raw = special.value("QA1");
+    if (raw.isUndefined()) {
+        raw = special.value("InventorySpecialSlotType");
+    }
+    if (raw.isDouble()) {
+        return static_cast<int>(raw.toDouble()) != 0;
+    }
+    QString type = specialSlotTypeValue(special);
+    if (type.isEmpty()) {
+        return true;
+    }
+    return type.compare("Supercharged", Qt::CaseInsensitive) == 0
+        || type.compare("SuperchargedSlot", Qt::CaseInsensitive) == 0
+        || type.compare("SuperchargedSlotType", Qt::CaseInsensitive) == 0;
+}
+
+QJsonObject specialSlotIndexValue(const QJsonObject &special)
+{
+    QJsonValue value = special.value("3ZH");
+    if (value.isUndefined()) {
+        value = special.value("Index");
+    }
+    return value.toObject();
+}
+
+int indexValue(const QJsonObject &idx, const char *shortKey, const char *longKey)
+{
+    if (idx.contains(shortKey)) {
+        return qRound(idx.value(shortKey).toDouble(-1));
+    }
+    return qRound(idx.value(longKey).toDouble(-1));
+}
+
+bool specialSlotsUseLongKeys(const QJsonArray &specialSlots)
+{
+    for (const QJsonValue &value : specialSlots) {
+        if (!value.isObject()) {
+            continue;
+        }
+        QJsonObject special = value.toObject();
+        if (special.contains("InventorySpecialSlotType") || special.contains("Index")) {
             return true;
         }
     }
@@ -195,15 +285,14 @@ void InventoryGridWidget::rebuild()
     for (const QJsonValue &value : specialSlots_) {
         if (!value.isObject()) continue;
         QJsonObject special = value.toObject();
-        
-        QString type = special.value("QA1").toVariant().toString().trimmed();
-        if (type.compare("Supercharged", Qt::CaseInsensitive) != 0) {
+
+        if (!isSuperchargedSlot(special)) {
             continue;
         }
 
-        QJsonObject idx = special.value("3ZH").toObject();
-        int x = qRound(idx.value(">Qh").toDouble(-1));
-        int y = qRound(idx.value("XJ>").toDouble(-1));
+        QJsonObject idx = specialSlotIndexValue(special);
+        int x = indexValue(idx, ">Qh", "X");
+        int y = indexValue(idx, "XJ>", "Y");
 
         if (x < 0 || y < 0) continue;
 
@@ -240,6 +329,7 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
     cell->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(cell, &QWidget::customContextMenuRequested, this, [this, cell](const QPoint &pos) {
         QMenu menu;
+        QAction *infoAction = menu.addAction(tr("Info..."));
         QAction *changeAmount = menu.addAction(tr("Change Amount..."));
         QAction *maxAmount = menu.addAction(tr("Max Amount"));
         QAction *deleteAction = menu.addAction(tr("Delete Item"));
@@ -252,7 +342,7 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
             repairAction = menu.addAction(tr("Repair"));
         }
         for (const QJsonValue &value : slots_) {
-            if (value.isObject() && isDamagedItem(value.toObject())) {
+            if (value.isObject() && isDamagedItem(value.toObject(), title_)) {
                 repairAllAction = menu.addAction(tr("Repair All Damaged"));
                 break;
             }
@@ -262,6 +352,7 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
         }
 
         bool supportsAmount = cell->supportsAmount();
+        infoAction->setEnabled(cell->hasItem());
         changeAmount->setVisible(supportsAmount);
         maxAmount->setVisible(supportsAmount);
         
@@ -281,7 +372,9 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
         }
 
         QAction *selected = menu.exec(cell->mapToGlobal(pos));
-        if (selected == changeAmount) {
+        if (selected == infoAction) {
+            showItemInfo(cell);
+        } else if (selected == changeAmount) {
             changeItemAmount(cell);
         } else if (selected == maxAmount) {
             maxItemAmount(cell);
@@ -299,6 +392,39 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
     });
 
     cell->setAcceptDrops(true);
+}
+
+void InventoryGridWidget::showItemInfo(InventoryCell *cell)
+{
+    if (!cell || !cell->hasItem()) {
+        return;
+    }
+    QJsonObject item = cell->currentItem();
+    QString rawId = item.value("b2n").toString();
+    QString id = normalizedItemId(item);
+    QString idLabel = id.isEmpty() ? rawId : id;
+
+    QJsonObject typeObj = item.value("Vn8").toObject();
+    QString typeRaw = typeObj.value("elv").toString();
+    ItemType type = itemTypeFromValue(typeRaw);
+    QString typeLabel = inventoryValueForType(type);
+    if (type == ItemType::Unknown && !typeRaw.isEmpty()) {
+        typeLabel = typeRaw;
+    }
+
+    QString displayName = ItemDefinitionRegistry::displayNameForId(rawId);
+    if (displayName.isEmpty()) {
+        displayName = ItemDefinitionRegistry::displayNameForId(id);
+    }
+    if (displayName.isEmpty()) {
+        displayName = cell->displayName();
+    }
+    if (displayName.isEmpty()) {
+        displayName = tr("Unknown");
+    }
+
+    QString text = tr("Name: %1\nID: %2\nType: %3").arg(displayName, idLabel, typeLabel);
+    QMessageBox::information(this, tr("Item Info"), text);
 }
 
 void InventoryGridWidget::moveOrSwap(int srcX, int srcY, int dstX, int dstY)
@@ -505,10 +631,11 @@ void InventoryGridWidget::toggleSupercharged(InventoryCell *cell)
     int y = cell->position().y;
 
     int foundIndex = -1;
+    const bool useLongKeys = specialSlotsUseLongKeys(specialSlots_);
     for (int i = 0; i < specialSlots_.size(); ++i) {
         QJsonObject obj = specialSlots_.at(i).toObject();
-        QJsonObject idx = obj.value("3ZH").toObject();
-        if (qRound(idx.value(">Qh").toDouble(-1)) == x && qRound(idx.value("XJ>").toDouble(-1)) == y) {
+        QJsonObject idx = specialSlotIndexValue(obj);
+        if (indexValue(idx, ">Qh", "X") == x && indexValue(idx, "XJ>", "Y") == y) {
             foundIndex = i;
             break;
         }
@@ -520,10 +647,17 @@ void InventoryGridWidget::toggleSupercharged(InventoryCell *cell)
     } else {
         QJsonObject newSpecial;
         QJsonObject idx;
-        idx.insert(">Qh", x);
-        idx.insert("XJ>", y);
-        newSpecial.insert("3ZH", idx);
-        newSpecial.insert("QA1", "Supercharged");
+        if (useLongKeys) {
+            idx.insert("X", x);
+            idx.insert("Y", y);
+            newSpecial.insert("Index", idx);
+            newSpecial.insert("InventorySpecialSlotType", "Supercharged");
+        } else {
+            idx.insert(">Qh", x);
+            idx.insert("XJ>", y);
+            newSpecial.insert("3ZH", idx);
+            newSpecial.insert("QA1", "Supercharged");
+        }
         specialSlots_.append(newSpecial);
         emit statusMessage(tr("Slot supercharged — remember to Save!"));
     }
@@ -575,7 +709,7 @@ void InventoryGridWidget::repairAllDamaged()
             continue;
         }
         QJsonObject item = value.toObject();
-        if (!isDamagedItem(item)) {
+        if (!isDamagedItem(item, title_)) {
             updatedSlots.append(item);
             continue;
         }
@@ -709,7 +843,8 @@ void InventoryGridWidget::InventoryCell::paintEvent(QPaintEvent *event)
 void InventoryGridWidget::InventoryCell::setContent(const QJsonObject &item, int iconSize)
 {
     item_ = item;
-    damaged_ = isDamagedItem(item_);
+    auto *grid = qobject_cast<InventoryGridWidget *>(parentWidget());
+    damaged_ = isDamagedItem(item_, grid ? grid->title() : QString());
     QString id = item.value("b2n").toString();
     int amount = item.value("1o9").toInt(1);
     int max = item.value("F9q").toInt(0);
@@ -728,7 +863,6 @@ void InventoryGridWidget::InventoryCell::setContent(const QJsonObject &item, int
     
     QJsonObject typeObj = item.value("Vn8").toObject();
     QString typeStr = typeObj.value("elv").toString().toLower();
-    auto *grid = qobject_cast<InventoryGridWidget *>(parentWidget());
     QString parentTitle = grid ? grid->title().toLower() : QString();
     
     if (typeStr == "technology" || parentTitle.contains("multi-tool") || parentTitle.contains("tech")) {

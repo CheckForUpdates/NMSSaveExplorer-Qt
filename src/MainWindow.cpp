@@ -13,17 +13,23 @@
 #include "ui/LoadingOverlay.h"
 #include <QtConcurrent>
 #include <QAction>
+#include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFileSystemWatcher>
 #include <QDesktopServices>
+#include <QFile>
 #include <QFileInfo>
 #include <QFileDialog>
 #include <QLabel>
+#include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressDialog>
+#include <QPushButton>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
@@ -194,6 +200,8 @@ void MainWindow::buildUi()
     connect(welcomePage_, &WelcomePage::openInventoryRequested, this, &MainWindow::openInventoryEditor);
     connect(welcomePage_, &WelcomePage::materialLookupRequested, this, &MainWindow::openMaterialLookup);
     connect(welcomePage_, &WelcomePage::saveChangesRequested, this, &MainWindow::saveChanges);
+    connect(welcomePage_, &WelcomePage::syncOtherSaveRequested, this, &MainWindow::syncOtherSave);
+    connect(welcomePage_, &WelcomePage::undoSyncRequested, this, &MainWindow::undoSync);
 
     connect(jsonPage_, &JsonExplorerPage::statusMessage, this, &MainWindow::setStatus);
     connect(inventoryPage_, &InventoryEditorPage::statusMessage, this, &MainWindow::setStatus);
@@ -611,6 +619,29 @@ void MainWindow::openMaterialLookup()
 
 void MainWindow::saveChanges()
 {
+    if (stackedPages_->currentWidget() == welcomePage_ && syncPending_) {
+        for (const PendingSyncTarget &target : pendingSync_.targets) {
+            QFile targetFile(target.path);
+            if (!targetFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                setStatus(tr("Unable to write %1").arg(target.path));
+                return;
+            }
+            if (target.path == currentSaveFile_) {
+                ignoreNextFileChange_ = true;
+            }
+            if (targetFile.write(pendingSync_.sourceBytes) != pendingSync_.sourceBytes.size()) {
+                setStatus(tr("Failed to write %1").arg(target.path));
+                return;
+            }
+            targetFile.close();
+        }
+        syncPending_ = false;
+        syncUndoAvailable_ = true;
+        welcomePage_->setSyncState(syncPending_, syncUndoAvailable_);
+        setStatus(tr("Sync saved to %1 file(s).").arg(pendingSync_.targets.size()));
+        return;
+    }
+
     QWidget *activePage = stackedPages_->currentWidget();
     QString error;
     bool saved = false;
@@ -651,6 +682,152 @@ void MainWindow::saveChanges()
     }
     ignoreNextFileChange_ = true;
     setStatus(tr("Saved changes."));
+}
+
+void MainWindow::syncOtherSave()
+{
+    SaveSlot slot = welcomePage_->selectedSlot();
+    if (slot.saveFiles.size() < 2) {
+        setStatus(tr("No other save file found in this slot."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Sync Saves"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *label = new QLabel(tr("Select the save that other files should sync to:"), &dialog);
+    layout->addWidget(label);
+
+    auto *list = new QListWidget(&dialog);
+    list->setSelectionMode(QAbstractItemView::SingleSelection);
+    layout->addWidget(list);
+
+    QList<SaveSlot::SaveFileEntry> entries = slot.saveFiles;
+    for (const SaveSlot::SaveFileEntry &entry : entries) {
+        list->addItem(QFileInfo(entry.filePath).fileName());
+    }
+
+    auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Cancel, &dialog);
+    QPushButton *syncButton = new QPushButton(tr("Sync"), &dialog);
+    syncButton->setEnabled(false);
+    buttonBox->addButton(syncButton, QDialogButtonBox::AcceptRole);
+    layout->addWidget(buttonBox);
+
+    connect(list, &QListWidget::currentRowChanged, &dialog, [syncButton](int row) {
+        syncButton->setEnabled(row >= 0);
+    });
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(syncButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    int selectedRow = list->currentRow();
+    if (selectedRow < 0 || selectedRow >= entries.size()) {
+        return;
+    }
+
+    QString sourcePath = entries.at(selectedRow).filePath;
+    QStringList targetNames;
+    QList<SaveSlot::SaveFileEntry> targets;
+    for (int i = 0; i < entries.size(); ++i) {
+        if (i == selectedRow) {
+            continue;
+        }
+        targets.append(entries.at(i));
+        targetNames.append(QFileInfo(entries.at(i).filePath).fileName());
+    }
+
+    QString confirmText;
+    if (targets.size() == 1) {
+        confirmText = tr("Sync %1 with %2?\n%2 will be overwritten.")
+                          .arg(QFileInfo(sourcePath).fileName(),
+                               targetNames.first());
+    } else {
+        confirmText = tr("Sync %1 with %2?\nThese files will be overwritten.")
+                          .arg(QFileInfo(sourcePath).fileName(),
+                               targetNames.join(tr(", ")));
+    }
+
+    if (QMessageBox::question(this, tr("Confirm Sync"), confirmText,
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+        != QMessageBox::Yes) {
+        return;
+    }
+
+    QFile sourceFile(sourcePath);
+    if (!sourceFile.open(QIODevice::ReadOnly)) {
+        setStatus(tr("Unable to read %1").arg(sourcePath));
+        return;
+    }
+    QByteArray sourceBytes = sourceFile.readAll();
+    sourceFile.close();
+    if (sourceBytes.isEmpty()) {
+        setStatus(tr("Selected save is empty."));
+        return;
+    }
+
+    QList<PendingSyncTarget> pendingTargets;
+    for (const SaveSlot::SaveFileEntry &entry : targets) {
+        QFile targetFile(entry.filePath);
+        if (!targetFile.open(QIODevice::ReadOnly)) {
+            setStatus(tr("Unable to read %1").arg(entry.filePath));
+            return;
+        }
+        PendingSyncTarget target;
+        target.path = entry.filePath;
+        target.originalBytes = targetFile.readAll();
+        targetFile.close();
+        pendingTargets.append(target);
+    }
+
+    pendingSync_.sourcePath = sourcePath;
+    pendingSync_.sourceBytes = sourceBytes;
+    pendingSync_.targets = pendingTargets;
+    syncPending_ = true;
+    syncUndoAvailable_ = false;
+    welcomePage_->setSyncState(syncPending_, syncUndoAvailable_);
+
+    setStatus(tr("Sync staged from %1. Save Changes to apply.")
+                  .arg(QFileInfo(sourcePath).fileName()));
+}
+
+void MainWindow::undoSync()
+{
+    if (syncPending_) {
+        syncPending_ = false;
+        pendingSync_ = PendingSync();
+        welcomePage_->setSyncState(syncPending_, syncUndoAvailable_);
+        setStatus(tr("Staged sync discarded."));
+        return;
+    }
+
+    if (!syncUndoAvailable_) {
+        setStatus(tr("No sync to undo."));
+        return;
+    }
+
+    for (const PendingSyncTarget &target : pendingSync_.targets) {
+        QFile targetFile(target.path);
+        if (!targetFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            setStatus(tr("Unable to write %1").arg(target.path));
+            return;
+        }
+        if (target.path == currentSaveFile_) {
+            ignoreNextFileChange_ = true;
+        }
+        if (targetFile.write(target.originalBytes) != target.originalBytes.size()) {
+            setStatus(tr("Failed to restore %1").arg(target.path));
+            return;
+        }
+        targetFile.close();
+    }
+
+    syncUndoAvailable_ = false;
+    pendingSync_ = PendingSync();
+    welcomePage_->setSyncState(syncPending_, syncUndoAvailable_);
+    setStatus(tr("Sync undone."));
 }
 
 void MainWindow::setStatus(const QString &text)

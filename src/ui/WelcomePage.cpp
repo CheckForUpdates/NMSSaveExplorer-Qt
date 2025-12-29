@@ -351,10 +351,11 @@ WelcomePage::WelcomePage(QWidget *parent)
     layout->addWidget(new QLabel(tr("Saves in selected slot:"), container));
 
     saveTable_ = new QTableWidget(container);
-    saveTable_->setColumnCount(2);
+    saveTable_->setColumnCount(3);
     saveTable_->setHorizontalHeaderLabels(QStringList()
                                           << tr("Save")
-                                          << tr("Last Save"));
+                                          << tr("Last Save")
+                                          << tr("Synced"));
     saveTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
     saveTable_->setSelectionMode(QAbstractItemView::NoSelection);
     saveTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -376,6 +377,10 @@ WelcomePage::WelcomePage(QWidget *parent)
     auto *refreshButton = new QPushButton(tr("Refresh"), container);
     auto *browseButton = new QPushButton(tr("Browse..."), container);
     auto *materialLookupButton = new QPushButton(tr("Material Lookup"), container);
+    syncButton_ = new QPushButton(tr("Sync Saves"), container);
+    syncButton_->setEnabled(false);
+    undoSyncButton_ = new QPushButton(tr("Undo Sync"), container);
+    undoSyncButton_->setEnabled(false);
     saveChangesButton_ = new QPushButton(tr("Save Changes"), container);
     saveChangesButton_->setProperty("canSave", false);
     
@@ -383,6 +388,8 @@ WelcomePage::WelcomePage(QWidget *parent)
     refreshRow->addWidget(refreshButton);
     refreshRow->addWidget(browseButton);
     refreshRow->addWidget(materialLookupButton);
+    refreshRow->addWidget(syncButton_);
+    refreshRow->addWidget(undoSyncButton_);
     refreshRow->addWidget(saveChangesButton_);
     refreshRow->addStretch();
     layout->addLayout(refreshRow);
@@ -391,6 +398,8 @@ WelcomePage::WelcomePage(QWidget *parent)
     connect(browseButton, &QPushButton::clicked, this, &WelcomePage::browseRequested);
     connect(materialLookupButton, &QPushButton::clicked, this, &WelcomePage::materialLookupRequested);
     connect(saveChangesButton_, &QPushButton::clicked, this, &WelcomePage::saveChangesRequested);
+    connect(syncButton_, &QPushButton::clicked, this, &WelcomePage::syncOtherSaveRequested);
+    connect(undoSyncButton_, &QPushButton::clicked, this, &WelcomePage::undoSyncRequested);
     connect(loadButton_, &QPushButton::clicked, this, [this]() {
         emit loadSaveRequested();
     });
@@ -499,6 +508,31 @@ void WelcomePage::updateSaveFilesTable(const SaveSlot &slot)
     selectedSaveRow_ = -1;
     selectedSavePath_.clear();
 
+    int loadedRow = -1;
+    QByteArray primaryBytes;
+    bool canCompare = slot.saveFiles.size() == 2;
+    QString primaryPath;
+    QByteArray secondaryBytes;
+    bool savesMatch = false;
+    if (canCompare) {
+        primaryPath = slot.saveFiles.at(0).filePath;
+        QFile primaryFile(primaryPath);
+        if (primaryFile.open(QIODevice::ReadOnly)) {
+            primaryBytes = primaryFile.readAll();
+        } else {
+            canCompare = false;
+        }
+        if (canCompare) {
+            QFile secondaryFile(slot.saveFiles.at(1).filePath);
+            if (secondaryFile.open(QIODevice::ReadOnly)) {
+                secondaryBytes = secondaryFile.readAll();
+                savesMatch = (secondaryBytes == primaryBytes);
+            } else {
+                canCompare = false;
+            }
+        }
+    }
+
     for (int row = 0; row < slot.saveFiles.size(); ++row) {
         const SaveSlot::SaveFileEntry &entry = slot.saveFiles.at(row);
         QString fileName = QFileInfo(entry.filePath).fileName();
@@ -506,6 +540,7 @@ void WelcomePage::updateSaveFilesTable(const SaveSlot &slot)
         bool isLoaded = (!loadedSavePath_.isEmpty() && entry.filePath == loadedSavePath_);
         if (isLoaded) {
             displayName = QString("%1 (%2)").arg(displayName, tr("Loaded"));
+            loadedRow = row;
         }
         auto *nameItem = new QTableWidgetItem(displayName);
         nameItem->setData(Qt::UserRole, entry.filePath);
@@ -524,8 +559,17 @@ void WelcomePage::updateSaveFilesTable(const SaveSlot &slot)
         timeItem->setData(Qt::UserRole + 2, saveTable_->palette().brush(QPalette::Text));
         saveTable_->setItem(row, 1, timeItem);
 
+        QString syncedLabel = (canCompare && savesMatch) ? tr("Yes") : tr("No");
+        auto *syncedItem = new QTableWidgetItem(syncedLabel);
+        syncedItem->setTextAlignment(Qt::AlignCenter);
+        syncedItem->setData(Qt::UserRole + 1, syncedItem->font());
+        syncedItem->setData(Qt::UserRole + 2, saveTable_->palette().brush(QPalette::Text));
+        saveTable_->setItem(row, 2, syncedItem);
     }
 
+    if (loadedRow >= 0) {
+        setRowBold(saveTable_, loadedRow, true);
+    }
     saveTable_->setCurrentItem(nullptr);
     saveTable_->clearSelection();
 }
@@ -541,10 +585,41 @@ QString WelcomePage::selectedSavePath() const
     return QString();
 }
 
+QString WelcomePage::otherSavePathForSelection() const
+{
+    QString selected = selectedSavePath();
+    if (selected.isEmpty()) {
+        return QString();
+    }
+    SaveSlot slot = selectedSlot();
+    for (const SaveSlot::SaveFileEntry &entry : slot.saveFiles) {
+        if (entry.filePath != selected) {
+            return entry.filePath;
+        }
+    }
+    return QString();
+}
+
+bool WelcomePage::hasOtherSaveForSelection() const
+{
+    SaveSlot slot = selectedSlot();
+    return slot.saveFiles.size() > 1;
+}
+
 void WelcomePage::updateButtonState()
 {
     bool hasSelection = selectedSaveRow_ >= 0 || !loadedSavePath_.isEmpty();
-    saveChangesButton_->setEnabled(saveChangesButton_->property("canSave").toBool() && hasSelection);
+    bool canSave = saveChangesButton_->property("canSave").toBool();
+    bool canSync = hasOtherSaveForSelection() && !syncPending_;
+    bool canUndo = syncPending_ || syncApplied_;
+
+    saveChangesButton_->setEnabled(syncPending_ || (canSave && hasSelection));
+    if (syncButton_) {
+        syncButton_->setEnabled(canSync);
+    }
+    if (undoSyncButton_) {
+        undoSyncButton_->setEnabled(canUndo);
+    }
     if (loadButton_) {
         loadButton_->setEnabled(!selectedSavePath_.isEmpty() && selectedSavePath_ != loadedSavePath_);
     }
@@ -597,7 +672,20 @@ void WelcomePage::setLoadedSavePath(const QString &path)
     }
     selectedSaveRow_ = -1;
     selectedSavePath_.clear();
-    updateSaveFilesTable(selectedSlot());
+    if (loadedSlotRow >= 0) {
+        updateSlotSelection(loadedSlotRow);
+        SaveSlot slot = selectedSlot();
+        updateSaveFilesTable(slot);
+    } else {
+        updateSaveFilesTable(selectedSlot());
+    }
+    updateButtonState();
+}
+
+void WelcomePage::setSyncState(bool pending, bool applied)
+{
+    syncPending_ = pending;
+    syncApplied_ = applied;
     updateButtonState();
 }
 
@@ -646,7 +734,14 @@ void WelcomePage::updateSlotSelection(int row)
 void WelcomePage::updateSaveSelection(int row)
 {
     if (selectedSaveRow_ >= 0) {
-        setRowBold(saveTable_, selectedSaveRow_, false);
+        bool wasLoaded = false;
+        QTableWidgetItem *item = saveTable_->item(selectedSaveRow_, 0);
+        if (item && item->data(Qt::UserRole).toString() == loadedSavePath_) {
+            wasLoaded = true;
+        }
+        if (!wasLoaded) {
+            setRowBold(saveTable_, selectedSaveRow_, false);
+        }
     }
     selectedSaveRow_ = row;
     selectedSavePath_.clear();

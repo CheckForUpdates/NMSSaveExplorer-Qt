@@ -1,6 +1,7 @@
 #include "ui/MaterialLookupDialog.h"
 
 #include "registry/IconRegistry.h"
+#include "registry/ItemCatalog.h"
 #include "registry/ItemDefinitionRegistry.h"
 
 #include <QHBoxLayout>
@@ -8,7 +9,10 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QIcon>
 #include <QPixmap>
+#include <QShowEvent>
+#include <QTimer>
 #include <QVBoxLayout>
 
 MaterialLookupDialog::MaterialLookupDialog(QWidget *parent)
@@ -27,12 +31,22 @@ MaterialLookupDialog::MaterialLookupDialog(QWidget *parent)
 
     populateList();
 
+    iconTimer_ = new QTimer(this);
+    iconTimer_->setInterval(1);
+    connect(iconTimer_, &QTimer::timeout, this, &MaterialLookupDialog::loadNextIconBatch);
+
     connect(searchField_, &QLineEdit::textChanged, this, &MaterialLookupDialog::filterList);
     connect(listWidget_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *item) {
         QString id = item->data(Qt::UserRole).toString();
         QString name = item->text();
         showDetail(id, name);
     });
+}
+
+void MaterialLookupDialog::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    startIconLoading();
 }
 
 void MaterialLookupDialog::populateList()
@@ -80,6 +94,77 @@ void MaterialLookupDialog::showDetail(const QString &id, const QString &name)
     layout->addWidget(iconLabel, 0, Qt::AlignCenter);
     layout->addWidget(nameLabel);
 
+    ItemType type = ItemType::Unknown;
+    QList<ItemEntry> entries = ItemCatalog::itemsForTypes(
+        {ItemType::Substance, ItemType::Product, ItemType::Technology});
+    QString normalizedId = id.startsWith('^') ? id.mid(1) : id;
+    for (const ItemEntry &entry : entries) {
+        if (entry.id.compare(normalizedId, Qt::CaseInsensitive) == 0) {
+            type = entry.type;
+            break;
+        }
+    }
+    QString typeLabel;
+    switch (type) {
+    case ItemType::Substance:
+        typeLabel = tr("Substance");
+        break;
+    case ItemType::Product:
+        typeLabel = tr("Product");
+        break;
+    case ItemType::Technology:
+        typeLabel = tr("Technology");
+        break;
+    default:
+        break;
+    }
+    if (!typeLabel.isEmpty()) {
+        QLabel *typeLabelWidget = new QLabel(typeLabel, &dialog);
+        typeLabelWidget->setAlignment(Qt::AlignCenter);
+        layout->addWidget(typeLabelWidget);
+    }
+
     dialog.resize(180, 200);
     dialog.exec();
+}
+
+void MaterialLookupDialog::startIconLoading()
+{
+    if (!iconTimer_ || iconTimer_->isActive()) {
+        return;
+    }
+    iconLoadIndex_ = 0;
+    iconTimer_->start();
+}
+
+void MaterialLookupDialog::loadNextIconBatch()
+{
+    if (!listWidget_) {
+        iconTimer_->stop();
+        return;
+    }
+
+    const int count = listWidget_->count();
+    const int batchSize = 40;
+    int end = qMin(iconLoadIndex_ + batchSize, count);
+
+    for (int i = iconLoadIndex_; i < end; ++i) {
+        QListWidgetItem *item = listWidget_->item(i);
+        if (!item) {
+            continue;
+        }
+        QString id = item->data(Qt::UserRole).toString();
+        if (id.isEmpty()) {
+            continue;
+        }
+        QPixmap icon = IconRegistry::iconForId(id);
+        if (!icon.isNull()) {
+            item->setIcon(QIcon(icon));
+        }
+    }
+
+    iconLoadIndex_ = end;
+    if (iconLoadIndex_ >= count) {
+        iconTimer_->stop();
+    }
 }

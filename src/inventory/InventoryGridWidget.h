@@ -90,6 +90,7 @@ private:
     void rebuild();
     void attachContextMenu(InventoryCell *cell);
     void moveOrSwap(int srcX, int srcY, int dstX, int dstY);
+    void showItemInfo(InventoryCell *cell);
     void changeItemAmount(InventoryCell *cell);
     void maxItemAmount(InventoryCell *cell);
     void deleteItem(InventoryCell *cell);

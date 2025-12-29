@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QByteArray>
 #include <QJsonDocument>
 #include <QFutureWatcher>
 #include <functional>
@@ -53,6 +54,8 @@ private:
     void openShipManager();
     void openMaterialLookup();
     void saveChanges();
+    void syncOtherSave();
+    void undoSync();
     void setStatus(const QString &text);
     void selectPage(const QString &key);
     QString resolveLatestSavePath(const SaveSlot &slot) const;
@@ -62,6 +65,15 @@ private:
     void updateSaveWatcher(const QString &path);
     void handleSaveFileChanged(const QString &path);
 
+    struct PendingSyncTarget {
+        QString path;
+        QByteArray originalBytes;
+    };
+    struct PendingSync {
+        QString sourcePath;
+        QByteArray sourceBytes;
+        QList<PendingSyncTarget> targets;
+    };
 
     QSplitter *mainSplitter_ = nullptr;
     QTreeWidget *sectionTree_ = nullptr;
@@ -79,6 +91,9 @@ private:
     LoadingOverlay *loadingOverlay_ = nullptr;
     QFutureWatcher<LoadResult> loadingWatcher_;
     bool ignoreNextFileChange_ = false;
+    bool syncPending_ = false;
+    bool syncUndoAvailable_ = false;
+    PendingSync pendingSync_;
 
     QList<SaveSlot> saveSlots_;
     QString currentSaveFile_;
