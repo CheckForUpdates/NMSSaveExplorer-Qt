@@ -72,6 +72,7 @@ private:
     bool resolveMultitool(InventoryDescriptor &out) const;
     bool resolveMultitoolTech(InventoryDescriptor &out) const;
     bool resolveFreighter(InventoryDescriptor &out) const;
+    bool resolveCorvetteCache(InventoryDescriptor &out) const;
     void addCurrenciesTab();
     void addExpeditionTab();
     void addSettlementTab();

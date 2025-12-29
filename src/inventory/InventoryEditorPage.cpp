@@ -283,6 +283,10 @@ void InventoryEditorPage::rebuildTabs()
         {
             descriptors.append(descriptor);
         }
+        if (resolveCorvetteCache(descriptor))
+        {
+            descriptors.append(descriptor);
+        }
     }
 
     QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
@@ -843,6 +847,40 @@ bool InventoryEditorPage::resolveFreighter(InventoryDescriptor &out) const
     }
     out.validPath = freighterPath;
     out.validPath << validKey;
+    return true;
+}
+
+bool InventoryEditorPage::resolveCorvetteCache(InventoryDescriptor &out) const
+{
+    QVariantList basePath = playerBasePath();
+    QVariantList inventoryPath = basePath;
+    inventoryPath << "wem";
+    QJsonValue inventoryValue = valueAtPath(rootDoc_.object(), inventoryPath);
+    QString slotsKey = ":No";
+    QString validKey = "hl?";
+    QString specialKey = "MMm";
+    if (!inventoryValue.isObject()) {
+        inventoryPath = basePath;
+        inventoryPath << "CorvetteStorageInventory";
+        inventoryValue = valueAtPath(rootDoc_.object(), inventoryPath);
+        slotsKey = "Slots";
+        validKey = "ValidSlotIndices";
+        specialKey = "SpecialSlots";
+    }
+    if (!inventoryValue.isObject()) {
+        return false;
+    }
+    QJsonObject inventoryObj = inventoryValue.toObject();
+    if (!inventoryObj.contains(slotsKey)) {
+        return false;
+    }
+    out.name = tr("Corvette Cache");
+    out.slotsPath = inventoryPath;
+    out.slotsPath << slotsKey;
+    out.validPath = inventoryPath;
+    out.validPath << validKey;
+    out.specialSlotsPath = inventoryPath;
+    out.specialSlotsPath << specialKey;
     return true;
 }
 
