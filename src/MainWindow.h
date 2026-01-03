@@ -4,10 +4,12 @@
 #include <QByteArray>
 #include <QJsonDocument>
 #include <QFutureWatcher>
+#include <QHash>
 #include <functional>
 #include <memory>
 
 #include "core/LosslessJsonDocument.h"
+#include "core/BackupManager.h"
 #include "core/SaveGameLocator.h"
 
 class QLabel;
@@ -22,6 +24,7 @@ class SettlementManagerPage;
 class ShipManagerPage;
 class WelcomePage;
 class LoadingOverlay;
+class BackupsPage;
 
 class MainWindow : public QMainWindow
 {
@@ -58,12 +61,17 @@ private:
     void undoSync();
     void setStatus(const QString &text);
     void selectPage(const QString &key);
+    bool hasPendingChanges() const;
+    void updateHomeSaveEnabled();
     QString resolveLatestSavePath(const SaveSlot &slot) const;
     bool confirmLeaveJsonEditor(const QString &nextAction);
     bool confirmDiscardOrSave(const QString &pageName,
                               const std::function<bool(QString *)> &saveFn);
     void updateSaveWatcher(const QString &path);
     void handleSaveFileChanged(const QString &path);
+    void maybeBackupOnLoad(const QString &path);
+    void refreshBackupsPage();
+    const SaveSlot *findSlotForPath(const QString &path) const;
 
     struct PendingSyncTarget {
         QString path;
@@ -89,6 +97,7 @@ private:
     QLabel *statusLabel_ = nullptr;
     QFileSystemWatcher *saveWatcher_ = nullptr;
     LoadingOverlay *loadingOverlay_ = nullptr;
+    BackupsPage *backupsPage_ = nullptr;
     QFutureWatcher<LoadResult> loadingWatcher_;
     bool ignoreNextFileChange_ = false;
     bool syncPending_ = false;
@@ -97,4 +106,6 @@ private:
 
     QList<SaveSlot> saveSlots_;
     QString currentSaveFile_;
+    QHash<QString, qint64> lastBackupMtime_;
+    BackupManager backupManager_;
 };

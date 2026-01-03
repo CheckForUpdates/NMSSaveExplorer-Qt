@@ -190,6 +190,45 @@ bool specialSlotsUseLongKeys(const QJsonArray &specialSlots)
     }
     return false;
 }
+
+QJsonObject validSlotIndexValue(const QJsonValue &value)
+{
+    if (!value.isObject()) {
+        return {};
+    }
+    QJsonObject obj = value.toObject();
+    if (obj.contains("Index")) {
+        return obj.value("Index").toObject();
+    }
+    if (obj.contains("3ZH")) {
+        return obj.value("3ZH").toObject();
+    }
+    return obj;
+}
+
+bool validSlotsUseIndexObject(const QJsonArray &validSlots)
+{
+    for (const QJsonValue &value : validSlots) {
+        if (!value.isObject()) {
+            continue;
+        }
+        if (value.toObject().contains("Index")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool validSlotsUseLongKeys(const QJsonArray &validSlots)
+{
+    for (const QJsonValue &value : validSlots) {
+        QJsonObject idx = validSlotIndexValue(value);
+        if (idx.contains("X") || idx.contains("Y")) {
+            return true;
+        }
+    }
+    return false;
+}
 }
 
 InventoryGridWidget::InventoryGridWidget(QWidget *parent)
@@ -216,7 +255,7 @@ void InventoryGridWidget::setInventory(const QString &title, const QJsonArray &s
     rebuild();
 }
 
-void InventoryGridWidget::setCommitHandler(const std::function<void(const QJsonArray &, const QJsonArray &)> &handler)
+void InventoryGridWidget::setCommitHandler(const std::function<void(const QJsonArray &, const QJsonArray &, const QJsonArray &)> &handler)
 {
     commitHandler_ = handler;
 }
@@ -259,8 +298,10 @@ void InventoryGridWidget::rebuild()
         for (int x = 0; x < gridWidth; ++x) {
             auto *cell = new InventoryCell(x, y, this);
             cell->setFixedSize(kCellSize, kCellSize);
-            cell->setDropEnabled(true);
-            cell->setDragEnabled(true);
+            bool slotEnabled = isSlotEnabled(x, y);
+            cell->setSlotEnabled(slotEnabled);
+            cell->setDropEnabled(slotEnabled);
+            cell->setDragEnabled(slotEnabled);
             attachContextMenu(cell);
             grid_->addWidget(cell, y, x);
         }
@@ -329,11 +370,16 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
     cell->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(cell, &QWidget::customContextMenuRequested, this, [this, cell](const QPoint &pos) {
         QMenu menu;
+        bool slotEnabled = cell->isSlotEnabled();
         QAction *infoAction = menu.addAction(tr("Info..."));
         QAction *changeAmount = menu.addAction(tr("Change Amount..."));
         QAction *maxAmount = menu.addAction(tr("Max Amount"));
         QAction *deleteAction = menu.addAction(tr("Delete Item"));
         QAction *addAction = menu.addAction(tr("Add Item..."));
+        QAction *enableSlotAction = nullptr;
+        if (!slotEnabled) {
+            enableSlotAction = menu.addAction(tr("Enable Slot"));
+        }
         menu.addSeparator();
         QAction *repairAction = nullptr;
         QAction *repairAllAction = nullptr;
@@ -359,7 +405,7 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
         changeAmount->setEnabled(cell->hasItem());
         maxAmount->setEnabled(cell->hasItem());
         deleteAction->setEnabled(cell->hasItem());
-        addAction->setEnabled(!cell->hasItem());
+        addAction->setEnabled(slotEnabled && !cell->hasItem());
         
         if (repairAction) {
             repairAction->setEnabled(cell->hasItem());
@@ -368,7 +414,7 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
             repairAllAction->setEnabled(true);
         }
         if (superchargeAction) {
-            superchargeAction->setEnabled(true);
+            superchargeAction->setEnabled(slotEnabled);
         }
 
         QAction *selected = menu.exec(cell->mapToGlobal(pos));
@@ -382,6 +428,8 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
             deleteItem(cell);
         } else if (selected == addAction) {
             addItem(cell);
+        } else if (enableSlotAction && selected == enableSlotAction) {
+            enableSlot(cell);
         } else if (repairAction && selected == repairAction) {
             repairItem(cell);
         } else if (repairAllAction && selected == repairAllAction) {
@@ -473,7 +521,7 @@ void InventoryGridWidget::moveOrSwap(int srcX, int srcY, int dstX, int dstY)
     }
 
     if (commitHandler_) {
-        commitHandler_(slots_, specialSlots_);
+        commitHandler_(slots_, validSlots_, specialSlots_);
     }
     rebuild();
     emit statusMessage(tr("Pending changes — remember to Save!"));
@@ -505,7 +553,7 @@ void InventoryGridWidget::changeItemAmount(InventoryCell *cell)
     }
     slots_.replace(index, found);
     if (commitHandler_) {
-        commitHandler_(slots_, specialSlots_);
+        commitHandler_(slots_, validSlots_, specialSlots_);
     }
     rebuild();
     emit statusMessage(tr("Pending changes — remember to Save!"));
@@ -526,7 +574,7 @@ void InventoryGridWidget::maxItemAmount(InventoryCell *cell)
         found.insert("1o9", maxAmount);
         slots_.replace(index, found);
         if (commitHandler_) {
-            commitHandler_(slots_, specialSlots_);
+            commitHandler_(slots_, validSlots_, specialSlots_);
         }
         rebuild();
         emit statusMessage(tr("Item maxed — remember to Save!"));
@@ -547,7 +595,7 @@ void InventoryGridWidget::deleteItem(InventoryCell *cell)
     }
     slots_.removeAt(index);
     if (commitHandler_) {
-        commitHandler_(slots_, specialSlots_);
+        commitHandler_(slots_, validSlots_, specialSlots_);
     }
     rebuild();
     emit statusMessage(tr("Pending changes — remember to Save!"));
@@ -556,6 +604,10 @@ void InventoryGridWidget::deleteItem(InventoryCell *cell)
 void InventoryGridWidget::addItem(InventoryCell *cell)
 {
     if (!cell) {
+        return;
+    }
+    if (!cell->isSlotEnabled()) {
+        emit statusMessage(tr("Slot is disabled."));
         return;
     }
 
@@ -618,10 +670,41 @@ void InventoryGridWidget::addItem(InventoryCell *cell)
 
     slots_.append(newItem);
     if (commitHandler_) {
-        commitHandler_(slots_, specialSlots_);
+        commitHandler_(slots_, validSlots_, specialSlots_);
     }
     rebuild();
     emit statusMessage(tr("Pending changes — remember to Save!"));
+}
+
+void InventoryGridWidget::enableSlot(InventoryCell *cell)
+{
+    if (!cell || validSlots_.isEmpty()) {
+        return;
+    }
+    int x = cell->position().x;
+    int y = cell->position().y;
+    if (isSlotEnabled(x, y)) {
+        return;
+    }
+
+    bool useIndexObject = validSlotsUseIndexObject(validSlots_);
+    bool useLongKeys = validSlotsUseLongKeys(validSlots_);
+    QJsonObject idx;
+    if (useLongKeys) {
+        idx.insert("X", x);
+        idx.insert("Y", y);
+    } else {
+        idx.insert(">Qh", x);
+        idx.insert("XJ>", y);
+    }
+
+    QJsonObject entry = useIndexObject ? QJsonObject{{"Index", idx}} : idx;
+    validSlots_.append(entry);
+    if (commitHandler_) {
+        commitHandler_(slots_, validSlots_, specialSlots_);
+    }
+    rebuild();
+    emit statusMessage(tr("Slot enabled — remember to Save!"));
 }
 
 void InventoryGridWidget::toggleSupercharged(InventoryCell *cell)
@@ -663,7 +746,7 @@ void InventoryGridWidget::toggleSupercharged(InventoryCell *cell)
     }
 
     if (commitHandler_) {
-        commitHandler_(slots_, specialSlots_);
+        commitHandler_(slots_, validSlots_, specialSlots_);
     }
     rebuild();
 }
@@ -687,7 +770,7 @@ void InventoryGridWidget::repairItem(InventoryCell *cell)
         slots_.replace(index, found);
     }
     if (commitHandler_) {
-        commitHandler_(slots_, specialSlots_);
+        commitHandler_(slots_, validSlots_, specialSlots_);
     }
     rebuild();
     emit statusMessage(tr("Item repaired — remember to Save!"));
@@ -733,7 +816,7 @@ void InventoryGridWidget::repairAllDamaged()
 
     slots_ = updatedSlots;
     if (commitHandler_) {
-        commitHandler_(slots_, specialSlots_);
+        commitHandler_(slots_, validSlots_, specialSlots_);
     }
     rebuild();
     if (removedCount > 0 && repairedCount > 0) {
@@ -770,6 +853,22 @@ void InventoryGridWidget::hideNameOverlay()
     if (nameOverlay_) {
         nameOverlay_->hide();
     }
+}
+
+bool InventoryGridWidget::isSlotEnabled(int x, int y) const
+{
+    if (validSlots_.isEmpty()) {
+        return true;
+    }
+    for (const QJsonValue &value : validSlots_) {
+        QJsonObject idx = validSlotIndexValue(value);
+        int slotX = indexValue(idx, ">Qh", "X");
+        int slotY = indexValue(idx, "XJ>", "Y");
+        if (slotX == x && slotY == y) {
+            return true;
+        }
+    }
+    return false;
 }
 
 QJsonObject InventoryGridWidget::findItemAt(int x, int y, int *index) const
@@ -816,11 +915,30 @@ void InventoryGridWidget::InventoryCell::setSupercharged(bool supercharged)
     update();
 }
 
+void InventoryGridWidget::InventoryCell::setSlotEnabled(bool enabled)
+{
+    slotEnabled_ = enabled;
+    if (slotEnabled_) {
+        setStyleSheet("background-color: #1f1f1f; border: 1px solid #2b2b2b;");
+    } else {
+        setStyleSheet("background-color: #5a5a5a; border: 1px solid #6b6b6b;");
+    }
+}
+
 void InventoryGridWidget::InventoryCell::paintEvent(QPaintEvent *event)
 {
-    QWidget::paintEvent(event);
+    Q_UNUSED(event);
+    QPainter painter(this);
+    if (slotEnabled_) {
+        QStyleOption option;
+        option.initFrom(this);
+        style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
+    } else {
+        painter.fillRect(rect(), QColor(90, 90, 90));
+        painter.setPen(QColor(107, 107, 107));
+        painter.drawRect(rect().adjusted(0, 0, -1, -1));
+    }
     if (damaged_) {
-        QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
         QColor glowColor(220, 45, 45, 160);
         QPen glowPen(glowColor, 2);
@@ -828,7 +946,6 @@ void InventoryGridWidget::InventoryCell::paintEvent(QPaintEvent *event)
         painter.drawRect(rect().adjusted(1, 1, -1, -1));
         painter.fillRect(rect().adjusted(1, 1, -1, -1), QColor(220, 45, 45, 24));
     } else if (supercharged_) {
-        QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
         
         QColor glowColor(0, 170, 255, 140); 
@@ -860,12 +977,7 @@ void InventoryGridWidget::InventoryCell::setContent(const QJsonObject &item, int
     }
 
     amountLabel_->setText(max > 0 ? QString("%1/%2").arg(amount).arg(max) : QString::number(amount));
-    
-    QJsonObject typeObj = item.value("Vn8").toObject();
-    QString typeStr = typeObj.value("elv").toString().toLower();
-    QString parentTitle = grid ? grid->title().toLower() : QString();
-    
-    if (typeStr == "technology" || parentTitle.contains("multi-tool") || parentTitle.contains("tech")) {
+    if (amount == -1) {
         amountLabel_->hide();
     } else {
         amountLabel_->show();
@@ -878,16 +990,7 @@ void InventoryGridWidget::InventoryCell::setContent(const QJsonObject &item, int
 bool InventoryGridWidget::InventoryCell::supportsAmount() const
 {
     if (!hasItem()) return false;
-    
-    QJsonObject typeObj = item_.value("Vn8").toObject();
-    QString typeStr = typeObj.value("elv").toString().toLower();
-    auto *grid = qobject_cast<InventoryGridWidget *>(parentWidget());
-    QString parentTitle = grid ? grid->title().toLower() : QString();
-    
-    if (typeStr == "technology" || parentTitle.contains("multi-tool") || parentTitle.contains("tech")) {
-        return false;
-    }
-    return true;
+    return item_.value("1o9").toInt(1) != -1;
 }
 
 void InventoryGridWidget::InventoryCell::setEmpty()

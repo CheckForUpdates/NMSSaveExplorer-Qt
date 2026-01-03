@@ -5,6 +5,7 @@
 #include "core/ResourceLocator.h"
 #include "core/SaveDecoder.h"
 #include "core/SaveEncoder.h"
+#include "core/Utf8Diagnostics.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -69,9 +70,12 @@ const char *kKeyBaseStatValue = ">MX";
 const char *kKeyBaseStatValueLong = "Value";
 
 const char *kKeyShipHealth = "ShipHealth";
-const char *kKeyShipHealthShort = "8yM";
-const char *kKeyShipShield = "Shield";
-const char *kKeyShipShieldShort = "6!S";
+const char *kKeyShipHealthShort = "KCM";
+const char *kKeyShipHealthLegacyShort = "8yM";
+const char *kKeyShipShield = "ShipShield";
+const char *kKeyShipShieldShort = "NE3";
+const char *kKeyShipShieldLegacyShort = "6!S";
+const char *kKeyShipShieldLegacy = "Shield";
 
 const char *kStatShipDamage = "^SHIP_DAMAGE";
 const char *kStatShipShield = "^SHIP_SHIELD";
@@ -295,15 +299,21 @@ bool ShipManagerPage::loadFromFile(const QString &filePath, QString *errorMessag
         return false;
     }
 
+    bool sanitized = false;
+    QByteArray qtBytes = sanitizeJsonUtf8ForQt(contentBytes, &sanitized);
     QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(contentBytes, &parseError);
+    QJsonDocument doc = QJsonDocument::fromJson(qtBytes, &parseError);
     if (parseError.error != QJsonParseError::NoError)
     {
         if (errorMessage)
         {
             *errorMessage = tr("JSON parse error: %1").arg(parseError.errorString());
         }
+        logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
         return false;
+    }
+    if (sanitized) {
+        qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
     }
 
     rootDoc_ = doc;
@@ -905,11 +915,23 @@ void ShipManagerPage::refreshShipFields(const QJsonObject &ship)
         healthValue = player.value(kKeyShipHealthShort);
     }
     if (healthValue.isUndefined()) {
+        healthValue = player.value(kKeyShipHealthLegacyShort);
+    }
+    if (healthValue.isUndefined()) {
         healthValue = findMappedKey(player, QStringLiteral("ShipHealth"));
     }
     QJsonValue shieldValue = player.value(kKeyShipShield);
     if (shieldValue.isUndefined()) {
         shieldValue = player.value(kKeyShipShieldShort);
+    }
+    if (shieldValue.isUndefined()) {
+        shieldValue = player.value(kKeyShipShieldLegacyShort);
+    }
+    if (shieldValue.isUndefined()) {
+        shieldValue = player.value(kKeyShipShieldLegacy);
+    }
+    if (shieldValue.isUndefined()) {
+        shieldValue = findMappedKey(player, QStringLiteral("ShipShield"));
     }
     if (shieldValue.isUndefined()) {
         shieldValue = findMappedKey(player, QStringLiteral("Shield"));

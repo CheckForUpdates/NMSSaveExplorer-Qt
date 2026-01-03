@@ -3,9 +3,11 @@
 #include "core/SaveDecoder.h"
 #include "core/SaveEncoder.h"
 #include "core/ResourceLocator.h"
+#include "core/Utf8Diagnostics.h"
 #include "inventory/InventoryGridWidget.h"
 #include "registry/IconRegistry.h"
 #include "registry/ItemDefinitionRegistry.h"
+#include "registry/LocalizationRegistry.h"
 
 #include <cmath>
 #include <QFile>
@@ -98,6 +100,14 @@ static QVariantList findMultitoolPath(const QJsonObject &root, const QVariantLis
     const char *kKeyMissionAmount = "1o9";
     const char *kKeyIcon = "DhC";
     const char *kKeyIconFilename = "93M";
+    const char *kKeyMissionProgress = "dwb";
+    const char *kKeyMissionSeed = "qK9";
+    const char *kKeyMissionProgressValue = "tW6";
+    const char *kKeyEncryption = "6BQ";
+    const char *kKeyEncryptionIsEncrypted = "Y7c";
+    const char *kKeyDecryptMissionId = "pdE";
+    const char *kKeyDecryptMissionSeed = "IsL";
+    const char *kKeyTitleUpper = "JRE";
     const char *kKeySeasonState = "qYy";
     const char *kKeyMilestoneValues = "psf";
     const char *kKeyUnits = "wGS";
@@ -161,15 +171,21 @@ bool InventoryEditorPage::loadFromFile(const QString &filePath, QString *errorMe
         return false;
     }
 
+    bool sanitized = false;
+    QByteArray qtBytes = sanitizeJsonUtf8ForQt(contentBytes, &sanitized);
     QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(contentBytes, &parseError);
+    QJsonDocument doc = QJsonDocument::fromJson(qtBytes, &parseError);
     if (parseError.error != QJsonParseError::NoError)
     {
         if (errorMessage)
         {
             *errorMessage = tr("JSON parse error: %1").arg(parseError.errorString());
         }
+        logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
         return false;
+    }
+    if (sanitized) {
+        qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
     }
 
     rootDoc_ = doc;
@@ -300,12 +316,16 @@ void InventoryEditorPage::rebuildTabs()
 
         auto *grid = new InventoryGridWidget(this);
         grid->setInventory(desc.name, slotsArray, valid, specialSlots);
-        grid->setCommitHandler([this, desc](const QJsonArray &updatedSlots, const QJsonArray &updatedSpecial)
+        grid->setCommitHandler([this, desc](const QJsonArray &updatedSlots, const QJsonArray &updatedValid, const QJsonArray &updatedSpecial)
                                {
             QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
                                                       : QJsonValue(rootDoc_.array());
             QJsonValue currentSlots = valueAtPath(rootValue, desc.slotsPath);
             applyDiffAtPath(desc.slotsPath, currentSlots, updatedSlots);
+            if (!desc.validPath.isEmpty()) {
+                QJsonValue currentValid = valueAtPath(rootValue, desc.validPath);
+                applyDiffAtPath(desc.validPath, currentValid, updatedValid);
+            }
             if (!desc.specialSlotsPath.isEmpty()) {
                 QJsonValue currentSpecial = valueAtPath(rootValue, desc.specialSlotsPath);
                 applyDiffAtPath(desc.specialSlotsPath, currentSpecial, updatedSpecial);
@@ -881,6 +901,7 @@ bool InventoryEditorPage::resolveCorvetteCache(InventoryDescriptor &out) const
     out.validPath << validKey;
     out.specialSlotsPath = inventoryPath;
     out.specialSlotsPath << specialKey;
+    out.type = InventoryType::Other;
     return true;
 }
 
@@ -939,6 +960,9 @@ void InventoryEditorPage::applyValueAtPath(const QVariantList &path, const QJson
     QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
                                                : QJsonValue(rootDoc_.array());
     if (valueAtPath(rootValue, path) == value) {
+        if (losslessDoc_) {
+            losslessDoc_->setValueAtPath(path, value);
+        }
         return;
     }
     QJsonValue updated = setValueAtPath(rootValue, path, 0, value);
@@ -1009,8 +1033,8 @@ void InventoryEditorPage::addCurrenciesTab()
     layout->setSpacing(12);
 
     auto *grid = new QGridLayout();
-    grid->setHorizontalSpacing(16);
-    grid->setVerticalSpacing(12);
+    grid->setHorizontalSpacing(8);
+    grid->setVerticalSpacing(10);
 
     QVariantList playerPath = playerBasePath();
     QJsonObject playerState = valueAtPath(rootDoc_.object(), playerPath).toObject();
@@ -1034,14 +1058,17 @@ void InventoryEditorPage::addCurrenciesTab()
         {
             auto *iconLabel = new QLabel(page);
             iconLabel->setPixmap(icon.scaled(32, 32, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            iconLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
             grid->addWidget(iconLabel, i, 0);
         }
 
         auto *label = new QLabel(def.label, page);
+        label->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         grid->addWidget(label, i, 1);
 
         auto *field = new QLineEdit(page);
-        field->setFixedWidth(140);
+        field->setFixedWidth(120);
+        field->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         qint64 initialValue = playerState.value(def.key).toVariant().toLongLong();
         field->setText(QLocale::system().toString(initialValue));
         grid->addWidget(field, i, 2);
@@ -1062,7 +1089,7 @@ void InventoryEditorPage::addCurrenciesTab()
     }
 
     auto *container = new QWidget(page);
-    container->setFixedWidth(400);
+    container->setFixedWidth(320);
     container->setLayout(grid);
     layout->addWidget(container);
 
@@ -1194,6 +1221,9 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
         QCheckBox *doneCheck = nullptr;
         int goalValue = 0;
         int milestoneIndex = -1;
+        QJsonObject encryption;
+        int stageIndex = -1;
+        int stageMilestoneIndex = -1;
     };
 
     QVector<MilestoneWidgets> stageWidgets;
@@ -1230,7 +1260,21 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
         }
         layout->addWidget(iconLabel, row, 0);
 
-        QString missionName = formatExpeditionToken(milestone.value(kKeyMissionName).toString());
+        QString missionToken = milestone.value(kKeyTitleUpper).toString();
+        QJsonObject encryption = milestone.value(kKeyEncryption).toObject();
+        if (encryption.value(kKeyEncryptionIsEncrypted).toBool() && !isDecryptMissionUnlocked(encryption))
+        {
+            QString encryptedToken = encryption.value(kKeyTitleUpper).toString();
+            if (!encryptedToken.isEmpty())
+            {
+                missionToken = encryptedToken;
+            }
+        }
+        QString missionName = formatExpeditionToken(missionToken);
+        if (missionName.isEmpty())
+        {
+            missionName = formatExpeditionToken(milestone.value(kKeyMissionName).toString());
+        }
         if (missionName.isEmpty())
         {
             missionName = tr("Mission %1").arg(i + 1);
@@ -1257,7 +1301,7 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
         doneCheck->setChecked(qFuzzyCompare(stored + 1.0, goalValue + 1.0));
         layout->addWidget(doneCheck, row, 4);
 
-        auto commitValue = [this, progressField, milestoneIndex, milestonePath]()
+        auto commitValue = [this, progressField, milestoneIndex, milestonePath, goalValue, encryption, stageIndex, i]()
         {
             bool ok = false;
             int value = progressField->text().toInt(&ok);
@@ -1272,13 +1316,17 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
             }
             values.replace(milestoneIndex, value);
             applyValueAtPath(milestonePath, values);
+            if (goalValue > 0 && value >= goalValue) {
+                updateDecryptMissionProgress(encryption, 1);
+                forceDecryptMilestone(stageIndex, i);
+            }
             emit statusMessage(tr("Pending changes — remember to Save!"));
         };
 
         connect(progressField, &QLineEdit::editingFinished, this, [commitValue]()
                 { commitValue(); });
 
-        connect(doneCheck, &QCheckBox::toggled, this, [this, progressField, goalValue, commitValue]()
+        connect(doneCheck, &QCheckBox::toggled, this, [this, progressField, goalValue, commitValue, encryption, stageIndex, i]()
                 {
             if (goalValue <= 0) {
                 return;
@@ -1289,6 +1337,9 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
             if (static_cast<int>(goalValue) != progressField->text().toInt()) {
                 progressField->setText(QString::number(static_cast<int>(goalValue)));
                 commitValue();
+            } else {
+                updateDecryptMissionProgress(encryption, 1);
+                forceDecryptMilestone(stageIndex, i);
             } });
 
         MilestoneWidgets widgets;
@@ -1296,6 +1347,9 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
         widgets.doneCheck = doneCheck;
         widgets.goalValue = goalValue;
         widgets.milestoneIndex = milestoneIndex;
+        widgets.encryption = encryption;
+        widgets.stageIndex = stageIndex;
+        widgets.stageMilestoneIndex = i;
         stageWidgets.append(widgets);
         stageGoals.append(goalValue);
     }
@@ -1340,6 +1394,10 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
                 QSignalBlocker blockDone(widgets.doneCheck);
                 widgets.progressField->setText(QString::number(nextValue));
                 widgets.doneCheck->setChecked(checked);
+                if (checked && goal > 0) {
+                    updateDecryptMissionProgress(widgets.encryption, 1);
+                    forceDecryptMilestone(widgets.stageIndex, widgets.stageMilestoneIndex);
+                }
                 updated = true;
             }
 
@@ -1602,10 +1660,15 @@ QWidget *InventoryEditorPage::buildStorageManager()
         window->setWindowTitle(desc.name);
         auto *grid = new InventoryGridWidget(window);
         grid->setInventory(desc.name, slotsArray, valid);
-        grid->setCommitHandler([this, desc](const QJsonArray &updatedSlots, const QJsonArray &)
+        grid->setCommitHandler([this, desc](const QJsonArray &updatedSlots, const QJsonArray &updatedValid, const QJsonArray &)
                                {
             QJsonValue currentSlots = valueAtPath(rootDoc_.object(), desc.slotsPath);
-            applyDiffAtPath(desc.slotsPath, currentSlots, updatedSlots); });
+            applyDiffAtPath(desc.slotsPath, currentSlots, updatedSlots);
+            if (!desc.validPath.isEmpty()) {
+                QJsonValue currentValid = valueAtPath(rootDoc_.object(), desc.validPath);
+                applyDiffAtPath(desc.validPath, currentValid, updatedValid);
+            }
+        });
         connect(grid, &InventoryGridWidget::statusMessage, this, &InventoryEditorPage::statusMessage);
         auto *scroll = new QScrollArea(window);
         scroll->setWidgetResizable(true);
@@ -1703,6 +1766,11 @@ QString InventoryEditorPage::formatExpeditionToken(const QString &raw) const
     {
         return QString();
     }
+    QString localized = LocalizationRegistry::resolveToken(raw);
+    if (!localized.isEmpty())
+    {
+        return localized.trimmed();
+    }
     QString value = raw;
     if (value.startsWith('^'))
     {
@@ -1720,4 +1788,92 @@ QString InventoryEditorPage::formatQuantity(double value) const
         return QString::number(static_cast<qint64>(rounded));
     }
     return QString::number(value);
+}
+
+bool InventoryEditorPage::isDecryptMissionUnlocked(const QJsonObject &encryption) const
+{
+    if (encryption.isEmpty())
+    {
+        return true;
+    }
+    if (!encryption.value(kKeyEncryptionIsEncrypted).toBool())
+    {
+        return true;
+    }
+    QString missionId = encryption.value(kKeyDecryptMissionId).toString();
+    if (missionId.isEmpty() || missionId == "^")
+    {
+        return false;
+    }
+    int seed = encryption.value(kKeyDecryptMissionSeed).toInt(0);
+
+    QVariantList progressPath = playerBasePath();
+    progressPath << kKeyMissionProgress;
+    QJsonArray progress = valueAtPath(rootDoc_.object(), progressPath).toArray();
+    for (const QJsonValue &entryValue : progress)
+    {
+        QJsonObject entry = entryValue.toObject();
+        if (entry.value(kKeyMissionName).toString() != missionId)
+        {
+            continue;
+        }
+        if (entry.value(kKeyMissionSeed).toInt(0) != seed)
+        {
+            continue;
+        }
+        int progressValue = entry.value(kKeyMissionProgressValue).toInt(0);
+        return progressValue > 0;
+    }
+    return false;
+}
+
+void InventoryEditorPage::updateDecryptMissionProgress(const QJsonObject &encryption, int progressValue)
+{
+    if (encryption.isEmpty() || !encryption.value(kKeyEncryptionIsEncrypted).toBool())
+    {
+        return;
+    }
+    QString missionId = encryption.value(kKeyDecryptMissionId).toString();
+    if (missionId.isEmpty() || missionId == "^")
+    {
+        return;
+    }
+    int seed = encryption.value(kKeyDecryptMissionSeed).toInt(0);
+
+    QVariantList progressPath = playerBasePath();
+    progressPath << kKeyMissionProgress;
+    QJsonArray progress = valueAtPath(rootDoc_.object(), progressPath).toArray();
+    for (int i = 0; i < progress.size(); ++i)
+    {
+        QJsonObject entry = progress.at(i).toObject();
+        if (entry.value(kKeyMissionName).toString() != missionId)
+        {
+            continue;
+        }
+        if (entry.value(kKeyMissionSeed).toInt(0) != seed)
+        {
+            continue;
+        }
+        entry.insert(kKeyMissionProgressValue, progressValue);
+        progress.replace(i, entry);
+        applyValueAtPath(progressPath, progress);
+        emit statusMessage(tr("Pending changes — remember to Save!"));
+        return;
+    }
+}
+
+void InventoryEditorPage::forceDecryptMilestone(int stageIndex, int milestoneIndex)
+{
+    QVariantList path = {kKeyCommonState, kKeySeasonData, kKeySeasonStages, stageIndex,
+                         kKeyStageMilestones, milestoneIndex, kKeyEncryption};
+    QJsonObject encryption = valueAtPath(rootDoc_.object(), path).toObject();
+    if (encryption.isEmpty() || !encryption.value(kKeyEncryptionIsEncrypted).toBool())
+    {
+        return;
+    }
+    encryption.insert(kKeyEncryptionIsEncrypted, false);
+    encryption.insert(kKeyDecryptMissionId, QStringLiteral("^"));
+    encryption.insert(kKeyDecryptMissionSeed, 0);
+    applyValueAtPath(path, encryption);
+    emit statusMessage(tr("Pending changes — remember to Save!"));
 }

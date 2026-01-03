@@ -92,6 +92,9 @@ private:
     QString formatStatId(const QString &id) const;
     QString formatExpeditionToken(const QString &raw) const;
     QString formatQuantity(double value) const;
+    bool isDecryptMissionUnlocked(const QJsonObject &encryption) const;
+    void updateDecryptMissionProgress(const QJsonObject &encryption, int progressValue);
+    void forceDecryptMilestone(int stageIndex, int milestoneIndex);
     QJsonObject activePlayerState() const;
     QJsonArray ensureMilestoneArray(QJsonObject &seasonState, int requiredSize) const;
     QJsonObject settlementRoot() const;

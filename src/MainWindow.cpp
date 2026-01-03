@@ -2,11 +2,13 @@
 
 #include "core/LosslessJsonDocument.h"
 #include "core/SaveDecoder.h"
+#include "core/Utf8Diagnostics.h"
 #include "inventory/InventoryEditorPage.h"
 #include "inventory/InventoryGridWidget.h"
 #include "registry/ItemCatalog.h"
 #include "settlement/SettlementManagerPage.h"
 #include "ship/ShipManagerPage.h"
+#include "ui/BackupsPage.h"
 #include "ui/JsonExplorerPage.h"
 #include "ui/MaterialLookupDialog.h"
 #include "ui/WelcomePage.h"
@@ -47,6 +49,8 @@ const char *kPageExpedition = "expedition";
 const char *kPageStorage = "storage";
 const char *kPageSettlement = "settlement";
 const char *kPageShip = "ship";
+const char *kPageBackups = "backups";
+
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -68,6 +72,10 @@ void MainWindow::buildUi()
     auto *homeItem = new QTreeWidgetItem(QStringList() << tr("Home"));
     homeItem->setData(0, Qt::UserRole, kPageHome);
     sectionTree_->addTopLevelItem(homeItem);
+
+    auto *backupsItem = new QTreeWidgetItem(QStringList() << tr("Backups"));
+    backupsItem->setData(0, Qt::UserRole, kPageBackups);
+    sectionTree_->addTopLevelItem(backupsItem);
 
     auto *jsonItem = new QTreeWidgetItem(QStringList() << tr("JSON Explorer"));
     jsonItem->setData(0, Qt::UserRole, kPageJson);
@@ -109,6 +117,8 @@ void MainWindow::buildUi()
     storageManagerPage_ = new InventoryEditorPage(this, InventoryEditorPage::InventorySection::StorageManager);
     settlementPage_ = new SettlementManagerPage(this);
     shipManagerPage_ = new ShipManagerPage(this);
+    backupsPage_ = new BackupsPage(this);
+    backupsPage_->setBackupRoot(backupManager_.rootPath());
 
     stackedPages_->addWidget(welcomePage_);
     stackedPages_->addWidget(jsonPage_);
@@ -118,6 +128,7 @@ void MainWindow::buildUi()
     stackedPages_->addWidget(currenciesPage_);
     stackedPages_->addWidget(expeditionPage_);
     stackedPages_->addWidget(storageManagerPage_);
+    stackedPages_->addWidget(backupsPage_);
 
     loadingOverlay_ = new LoadingOverlay(this);
 
@@ -165,6 +176,11 @@ void MainWindow::buildUi()
                     openShipManager();
                     return;
                 }
+                if (key == kPageBackups) {
+                    selectPage(kPageBackups);
+                    refreshBackupsPage();
+                    return;
+                }
             if (key == kPageJson) {
                 if (currentSaveFile_.isEmpty()) {
                     selectPage(kPageJson);
@@ -203,6 +219,40 @@ void MainWindow::buildUi()
     connect(welcomePage_, &WelcomePage::syncOtherSaveRequested, this, &MainWindow::syncOtherSave);
     connect(welcomePage_, &WelcomePage::undoSyncRequested, this, &MainWindow::undoSync);
 
+    connect(backupsPage_, &BackupsPage::refreshRequested, this, &MainWindow::refreshBackupsPage);
+    connect(backupsPage_, &BackupsPage::openFolderRequested, this, [](const QString &path) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    });
+    connect(backupsPage_, &BackupsPage::restoreRequested, this, [this](const BackupEntry &entry) {
+        QString targetPath = entry.sourcePath;
+        if (targetPath.isEmpty() || !QFileInfo::exists(targetPath)) {
+            targetPath = QFileDialog::getSaveFileName(this, tr("Restore Backup To"), QString(),
+                                                      tr("No Man's Sky Saves (*.hg);;All Files (*.*)"));
+        }
+        if (targetPath.isEmpty()) {
+            return;
+        }
+        QString confirm = tr("Restore backup from %1 to:\n%2")
+                              .arg(BackupManager::formatTimestamp(entry.backupTimeMs), targetPath);
+        if (QMessageBox::question(this, tr("Confirm Restore"), confirm,
+                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+            != QMessageBox::Yes) {
+            return;
+        }
+
+        const SaveSlot *slot = findSlotForPath(targetPath);
+        QString error;
+        if (QFileInfo::exists(targetPath)) {
+            backupManager_.createBackup(targetPath, slot, QStringLiteral("pre-restore"), nullptr, &error);
+        }
+        if (!backupManager_.restoreBackup(entry, targetPath, &error)) {
+            setStatus(error.isEmpty() ? tr("Restore failed.") : error);
+            return;
+        }
+        lastBackupMtime_.remove(targetPath);
+        setStatus(tr("Backup restored to %1").arg(QFileInfo(targetPath).fileName()));
+    });
+
     connect(jsonPage_, &JsonExplorerPage::statusMessage, this, &MainWindow::setStatus);
     connect(inventoryPage_, &InventoryEditorPage::statusMessage, this, &MainWindow::setStatus);
     connect(currenciesPage_, &InventoryEditorPage::statusMessage, this, &MainWindow::setStatus);
@@ -234,6 +284,8 @@ void MainWindow::buildMenus()
     auto *viewMenu = menuBar()->addMenu(tr("View"));
     QAction *expandAction = viewMenu->addAction(tr("Expand All"));
     QAction *collapseAction = viewMenu->addAction(tr("Collapse All"));
+
+    menuBar()->addAction(saveAction);
 
     auto *helpMenu = menuBar()->addMenu(tr("Help"));
     QAction *logAction = helpMenu->addAction(tr("Open Log Folder"));
@@ -333,10 +385,82 @@ void MainWindow::loadSavePath(const QString &path)
     }
 
     currentSaveFile_ = path;
+    maybeBackupOnLoad(currentSaveFile_);
     updateSaveWatcher(currentSaveFile_);
     welcomePage_->setSaveEnabled(false);
     welcomePage_->setLoadedSavePath(currentSaveFile_);
     setStatus(tr("Loaded %1").arg(QFileInfo(path).fileName()));
+}
+
+void MainWindow::maybeBackupOnLoad(const QString &path)
+{
+    QFileInfo info(path);
+    if (!info.exists()) {
+        return;
+    }
+    qint64 mtime = info.lastModified().toMSecsSinceEpoch();
+    if (lastBackupMtime_.value(path) == mtime) {
+        return;
+    }
+    const SaveSlot *slot = findSlotForPath(path);
+    QString error;
+    if (backupManager_.createBackup(path, slot, QStringLiteral("load"), nullptr, &error)) {
+        lastBackupMtime_.insert(path, mtime);
+    } else if (!error.isEmpty()) {
+        qWarning() << "Backup failed:" << error;
+    }
+}
+
+void MainWindow::refreshBackupsPage()
+{
+    if (!backupsPage_) {
+        return;
+    }
+    backupsPage_->setBackupRoot(backupManager_.rootPath());
+    QString error;
+    QList<BackupEntry> entries = backupManager_.listBackups(&error);
+    if (backupsPage_->currentOnlyEnabled() && !currentSaveFile_.isEmpty()) {
+        QString target = QFileInfo(currentSaveFile_).canonicalFilePath();
+        if (target.isEmpty()) {
+            target = QFileInfo(currentSaveFile_).absoluteFilePath();
+        }
+        QList<BackupEntry> filtered;
+        filtered.reserve(entries.size());
+        for (const BackupEntry &entry : entries) {
+            QString source = QFileInfo(entry.sourcePath).canonicalFilePath();
+            if (source.isEmpty()) {
+                source = QFileInfo(entry.sourcePath).absoluteFilePath();
+            }
+            if (!source.isEmpty() && source == target) {
+                filtered.append(entry);
+            }
+        }
+        entries = filtered;
+    }
+    backupsPage_->setBackups(entries);
+    if (!error.isEmpty()) {
+        qWarning() << "Backup listing error:" << error;
+    }
+}
+
+const SaveSlot *MainWindow::findSlotForPath(const QString &path) const
+{
+    QString target = QFileInfo(path).canonicalFilePath();
+    if (target.isEmpty()) {
+        target = QFileInfo(path).absoluteFilePath();
+    }
+    for (const SaveSlot &slot : saveSlots_) {
+        for (const SaveSlot::SaveFileEntry &entry : slot.saveFiles) {
+            QString candidate = QFileInfo(entry.filePath).canonicalFilePath();
+            if (candidate.isEmpty()) {
+                candidate = QFileInfo(entry.filePath).absoluteFilePath();
+            }
+            if (!candidate.isEmpty() && candidate == target) {
+                return &slot;
+            }
+        }
+    }
+    return nullptr;
 }
 
 void MainWindow::openJsonEditor()
@@ -364,10 +488,16 @@ void MainWindow::openJsonEditor()
                 result.error = error;
                 return result;
             }
+            bool sanitized = false;
+            QByteArray qtBytes = sanitizeJsonUtf8ForQt(content, &sanitized);
             QJsonParseError parseError;
-            result.doc = QJsonDocument::fromJson(content, &parseError);
+            result.doc = QJsonDocument::fromJson(qtBytes, &parseError);
             if (parseError.error != QJsonParseError::NoError) {
                 result.error = QObject::tr("JSON parse error: %1").arg(parseError.errorString());
+                logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
+            }
+            if (sanitized) {
+                qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
             }
         }
         result.error = error;
@@ -386,7 +516,7 @@ void MainWindow::openJsonEditor()
         }
 
         jsonPage_->setRootDoc(doc, currentSaveFile_, result.lossless);
-        welcomePage_->setSaveEnabled(jsonPage_->hasLoadedSave());
+        welcomePage_->setSaveEnabled(jsonPage_->hasUnsavedChanges());
         welcomePage_->setLoadedSavePath(currentSaveFile_);
         updateSaveWatcher(currentSaveFile_);
         selectPage(kPageJson);
@@ -424,7 +554,7 @@ void MainWindow::openInventoryEditor()
     }
     currentSaveFile_ = path;
     updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(inventoryPage_->hasLoadedSave());
+    welcomePage_->setSaveEnabled(inventoryPage_->hasUnsavedChanges());
     welcomePage_->setLoadedSavePath(currentSaveFile_);
     selectPage(kPageInventory);
 }
@@ -458,7 +588,7 @@ void MainWindow::openCurrenciesEditor()
     }
     currentSaveFile_ = path;
     updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(currenciesPage_->hasLoadedSave());
+    welcomePage_->setSaveEnabled(currenciesPage_->hasUnsavedChanges());
     welcomePage_->setLoadedSavePath(currentSaveFile_);
     selectPage(kPageCurrencies);
 }
@@ -492,7 +622,7 @@ void MainWindow::openExpeditionEditor()
     }
     currentSaveFile_ = path;
     updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(expeditionPage_->hasLoadedSave());
+    welcomePage_->setSaveEnabled(expeditionPage_->hasUnsavedChanges());
     welcomePage_->setLoadedSavePath(currentSaveFile_);
     selectPage(kPageExpedition);
 }
@@ -527,7 +657,7 @@ void MainWindow::openStorageManager()
     }
     currentSaveFile_ = path;
     updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(storageManagerPage_->hasLoadedSave());
+    welcomePage_->setSaveEnabled(storageManagerPage_->hasUnsavedChanges());
     welcomePage_->setLoadedSavePath(currentSaveFile_);
     selectPage(kPageStorage);
 }
@@ -569,8 +699,9 @@ void MainWindow::openSettlementManager()
         return;
     }
     currentSaveFile_ = path;
+    maybeBackupOnLoad(currentSaveFile_);
     updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(settlementPage_->hasLoadedSave());
+    welcomePage_->setSaveEnabled(settlementPage_->hasUnsavedChanges());
     welcomePage_->setLoadedSavePath(currentSaveFile_);
     selectPage(kPageSettlement);
 }
@@ -606,7 +737,7 @@ void MainWindow::openShipManager()
     }
     currentSaveFile_ = path;
     updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(shipManagerPage_->hasLoadedSave());
+    welcomePage_->setSaveEnabled(shipManagerPage_->hasUnsavedChanges());
     welcomePage_->setLoadedSavePath(currentSaveFile_);
     selectPage(kPageShip);
 }
@@ -681,6 +812,7 @@ void MainWindow::saveChanges()
         return;
     }
     ignoreNextFileChange_ = true;
+    updateHomeSaveEnabled();
     setStatus(tr("Saved changes."));
 }
 
@@ -839,6 +971,7 @@ void MainWindow::setStatus(const QString &text)
 void MainWindow::selectPage(const QString &key)
 {
     if (key == kPageHome) {
+        updateHomeSaveEnabled();
         stackedPages_->setCurrentIndex(0);
     } else if (key == kPageJson) {
         stackedPages_->setCurrentIndex(1);
@@ -854,7 +987,28 @@ void MainWindow::selectPage(const QString &key)
         stackedPages_->setCurrentIndex(6);
     } else if (key == kPageStorage) {
         stackedPages_->setCurrentIndex(7);
+    } else if (key == kPageBackups) {
+        stackedPages_->setCurrentIndex(8);
     }
+}
+
+bool MainWindow::hasPendingChanges() const
+{
+    return (jsonPage_ && jsonPage_->hasLoadedSave() && jsonPage_->hasUnsavedChanges())
+        || (inventoryPage_ && inventoryPage_->hasLoadedSave() && inventoryPage_->hasUnsavedChanges())
+        || (currenciesPage_ && currenciesPage_->hasLoadedSave() && currenciesPage_->hasUnsavedChanges())
+        || (expeditionPage_ && expeditionPage_->hasLoadedSave() && expeditionPage_->hasUnsavedChanges())
+        || (storageManagerPage_ && storageManagerPage_->hasLoadedSave() && storageManagerPage_->hasUnsavedChanges())
+        || (settlementPage_ && settlementPage_->hasLoadedSave() && settlementPage_->hasUnsavedChanges())
+        || (shipManagerPage_ && shipManagerPage_->hasLoadedSave() && shipManagerPage_->hasUnsavedChanges());
+}
+
+void MainWindow::updateHomeSaveEnabled()
+{
+    if (!welcomePage_) {
+        return;
+    }
+    welcomePage_->setSaveEnabled(hasPendingChanges());
 }
 
 
