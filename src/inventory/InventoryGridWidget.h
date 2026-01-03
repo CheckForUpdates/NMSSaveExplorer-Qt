@@ -16,7 +16,7 @@ public:
 
     void setInventory(const QString &title, const QJsonArray &slotsArray,
                       const QJsonArray &validSlots, const QJsonArray &specialSlots = QJsonArray());
-    void setCommitHandler(const std::function<void(const QJsonArray &, const QJsonArray &)> &handler);
+    void setCommitHandler(const std::function<void(const QJsonArray &, const QJsonArray &, const QJsonArray &)> &handler);
     QString title() const { return title_; }
     static int preferredGridWidth();
     static int preferredGridHeight(int rows);
@@ -42,10 +42,12 @@ private:
         InventoryCell(int x, int y, QWidget *parent = nullptr);
         void setContent(const QJsonObject &item, int iconSize);
         void setSupercharged(bool supercharged);
+        void setSlotEnabled(bool enabled);
         void setEmpty();
         SlotPosition position() const { return {x_, y_}; }
         bool isSupercharged() const { return supercharged_; }
         bool isDamaged() const { return damaged_; }
+        bool isSlotEnabled() const { return slotEnabled_; }
 
         void setDragEnabled(bool enabled) { dragEnabled_ = enabled; }
         void setDropEnabled(bool enabled) { dropEnabled_ = enabled; }
@@ -78,6 +80,7 @@ private:
         bool dropEnabled_ = false;
         bool supercharged_ = false;
         bool damaged_ = false;
+        bool slotEnabled_ = true;
         QJsonObject item_;
         QString displayName_;
         QLabel *amountLabel_ = nullptr;
@@ -95,10 +98,12 @@ private:
     void maxItemAmount(InventoryCell *cell);
     void deleteItem(InventoryCell *cell);
     void addItem(InventoryCell *cell);
+    void enableSlot(InventoryCell *cell);
     void toggleSupercharged(InventoryCell *cell);
     void repairItem(InventoryCell *cell);
     void repairAllDamaged();
 
+    bool isSlotEnabled(int x, int y) const;
     QJsonObject findItemAt(int x, int y, int *index = nullptr) const;
 
     QString title_;
@@ -107,5 +112,5 @@ private:
     QJsonArray specialSlots_;
     QGridLayout *grid_ = nullptr;
     QLabel *nameOverlay_ = nullptr;
-    std::function<void(const QJsonArray &, const QJsonArray &)> commitHandler_;
+    std::function<void(const QJsonArray &, const QJsonArray &, const QJsonArray &)> commitHandler_;
 };

@@ -4,15 +4,19 @@
 #include "core/ResourceLocator.h"
 #include "core/SaveDecoder.h"
 #include "core/SaveEncoder.h"
+#include "core/Utf8Diagnostics.h"
 
 #include <QAbstractItemView>
 #include <QAction>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDebug>
+#include <QCheckBox>
 #include <QFileInfo>
 #include <QFile>
+#include <QGroupBox>
 #include <QHBoxLayout>
+#include <QGridLayout>
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -21,6 +25,8 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRadioButton>
+#include <QRegularExpression>
 #include <QShortcut>
 #include <QStandardItem>
 #include <QStandardItemModel>
@@ -190,14 +196,20 @@ bool JsonExplorerPage::loadFromFile(const QString &filePath, QString *errorMessa
         return false;
     }
 
+    bool sanitized = false;
+    QByteArray qtBytes = sanitizeJsonUtf8ForQt(contentBytes, &sanitized);
     QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(contentBytes, &parseError);
+    QJsonDocument doc = QJsonDocument::fromJson(qtBytes, &parseError);
     if (parseError.error != QJsonParseError::NoError) {
         if (errorMessage) {
             *errorMessage = tr("JSON parse error: %1").arg(parseError.errorString());
         }
         qWarning() << "JSON parse error:" << parseError.errorString();
+        logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
         return false;
+    }
+    if (sanitized) {
+        qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
     }
 
     qInfo() << "JSON parse ok. isObject=" << doc.isObject() << "isArray=" << doc.isArray();
@@ -811,40 +823,128 @@ void JsonExplorerPage::showFindDialog()
     auto *layout = new QVBoxLayout(&dialog);
     auto *field = new QLineEdit(&dialog);
     field->setPlaceholderText(tr("Enter text to find..."));
+    field->setText(lastSearchText_);
     layout->addWidget(field);
+
+    auto *optionsLayout = new QGridLayout();
+    auto *caseSensitive = new QCheckBox(tr("Case sensitive"), &dialog);
+    caseSensitive->setChecked(lastFindCaseSensitive_);
+    auto *wholeWord = new QCheckBox(tr("Whole word"), &dialog);
+    wholeWord->setChecked(lastFindWholeWord_);
+    auto *wrap = new QCheckBox(tr("Wrap search"), &dialog);
+    wrap->setChecked(lastFindWrap_);
+    auto *useRegex = new QCheckBox(tr("Use regular expression"), &dialog);
+    useRegex->setChecked(lastFindUseRegex_);
+
+    optionsLayout->addWidget(caseSensitive, 0, 0);
+    optionsLayout->addWidget(wholeWord, 0, 1);
+    optionsLayout->addWidget(wrap, 1, 0);
+    optionsLayout->addWidget(useRegex, 1, 1);
+    layout->addLayout(optionsLayout);
+
+    auto *directionGroup = new QGroupBox(tr("Direction"), &dialog);
+    auto *directionLayout = new QHBoxLayout(directionGroup);
+    auto *forward = new QRadioButton(tr("Forward"), directionGroup);
+    auto *backward = new QRadioButton(tr("Backward"), directionGroup);
+    forward->setChecked(!lastFindBackward_);
+    backward->setChecked(lastFindBackward_);
+    directionLayout->addWidget(forward);
+    directionLayout->addWidget(backward);
+    directionLayout->addStretch();
+    layout->addWidget(directionGroup);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     buttons->button(QDialogButtonBox::Ok)->setText(tr("Find Next"));
     layout->addWidget(buttons);
 
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, [this, field]() {
-        performFind(field->text());
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [this, field, backward, wrap, caseSensitive, wholeWord, useRegex]() {
+        performFind(field->text(),
+                    backward->isChecked(),
+                    wrap->isChecked(),
+                    caseSensitive->isChecked(),
+                    wholeWord->isChecked(),
+                    useRegex->isChecked());
     });
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
 
     dialog.exec();
 }
 
-void JsonExplorerPage::performFind(const QString &text)
+void JsonExplorerPage::performFind(const QString &text, bool backward, bool wrap, bool caseSensitive, bool wholeWord, bool useRegex)
 {
-    QString content = editor_->toPlainText();
     if (text.isEmpty()) {
         return;
     }
-    if (text != lastSearchText_) {
-        lastFindIndex_ = -1;
+
+    bool optionsChanged = text != lastSearchText_ ||
+                          backward != lastFindBackward_ ||
+                          caseSensitive != lastFindCaseSensitive_ ||
+                          wholeWord != lastFindWholeWord_ ||
+                          useRegex != lastFindUseRegex_;
+
+    lastSearchText_ = text;
+    lastFindBackward_ = backward;
+    lastFindWrap_ = wrap;
+    lastFindCaseSensitive_ = caseSensitive;
+    lastFindWholeWord_ = wholeWord;
+    lastFindUseRegex_ = useRegex;
+
+    QTextDocument::FindFlags flags;
+    if (backward) {
+        flags |= QTextDocument::FindBackward;
     }
-    int nextIndex = content.indexOf(text, lastFindIndex_ + 1, Qt::CaseSensitive);
-    if (nextIndex < 0 && lastFindIndex_ >= 0) {
-        nextIndex = content.indexOf(text, 0, Qt::CaseSensitive);
+    if (caseSensitive) {
+        flags |= QTextDocument::FindCaseSensitively;
     }
-    if (nextIndex >= 0) {
-        QTextCursor cursor = editor_->textCursor();
-        cursor.setPosition(nextIndex);
-        cursor.setPosition(nextIndex + text.length(), QTextCursor::KeepAnchor);
-        editor_->setTextCursor(cursor);
-        lastFindIndex_ = nextIndex;
-        lastSearchText_ = text;
+    if (!useRegex && wholeWord) {
+        flags |= QTextDocument::FindWholeWords;
+    }
+
+    QTextCursor startCursor = editor_->textCursor();
+    if (optionsChanged) {
+        if (backward) {
+            startCursor.movePosition(QTextCursor::End);
+        } else {
+            startCursor.movePosition(QTextCursor::Start);
+        }
+    }
+
+    QRegularExpression regex;
+    if (useRegex) {
+        QString pattern = text;
+        if (wholeWord) {
+            pattern = QStringLiteral("\\b(?:%1)\\b").arg(pattern);
+        }
+        regex = QRegularExpression(pattern);
+        if (!caseSensitive) {
+            regex.setPatternOptions(regex.patternOptions() | QRegularExpression::CaseInsensitiveOption);
+        }
+        if (!regex.isValid()) {
+            emit statusMessage(tr("Invalid regular expression: %1").arg(regex.errorString()));
+            return;
+        }
+    }
+
+    auto findFrom = [&](const QTextCursor &cursor) -> QTextCursor {
+        if (useRegex) {
+            return editor_->document()->find(regex, cursor, flags);
+        }
+        return editor_->document()->find(text, cursor, flags);
+    };
+
+    QTextCursor found = findFrom(startCursor);
+    if (found.isNull() && wrap) {
+        QTextCursor wrapCursor = editor_->textCursor();
+        if (backward) {
+            wrapCursor.movePosition(QTextCursor::End);
+        } else {
+            wrapCursor.movePosition(QTextCursor::Start);
+        }
+        found = findFrom(wrapCursor);
+    }
+
+    if (!found.isNull()) {
+        editor_->setTextCursor(found);
         emit statusMessage(tr("Found \"%1\"").arg(text));
     } else {
         emit statusMessage(tr("No matches for \"%1\"").arg(text));

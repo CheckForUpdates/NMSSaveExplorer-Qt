@@ -54,7 +54,7 @@ private:
     void clearModified(QStandardItem *item);
 
     void showFindDialog();
-    void performFind(const QString &text);
+    void performFind(const QString &text, bool backward, bool wrap, bool caseSensitive, bool wholeWord, bool useRegex);
 
     void ensureMappingLoaded();
 
@@ -72,6 +72,10 @@ private:
     QSet<QStandardItem *> modifiedItems_;
     QHash<QString, QString> reverseMapping_;
 
-    int lastFindIndex_ = -1;
     QString lastSearchText_;
+    bool lastFindBackward_ = false;
+    bool lastFindWrap_ = true;
+    bool lastFindCaseSensitive_ = true;
+    bool lastFindWholeWord_ = false;
+    bool lastFindUseRegex_ = false;
 };

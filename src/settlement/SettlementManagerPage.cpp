@@ -2,6 +2,7 @@
 
 #include "core/SaveDecoder.h"
 #include "core/SaveEncoder.h"
+#include "core/Utf8Diagnostics.h"
 #include "registry/ItemDefinitionRegistry.h"
 
 #include <climits>
@@ -124,15 +125,21 @@ bool SettlementManagerPage::loadFromFile(const QString &filePath, QString *error
         return false;
     }
 
+    bool sanitized = false;
+    QByteArray qtBytes = sanitizeJsonUtf8ForQt(contentBytes, &sanitized);
     QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(contentBytes, &parseError);
+    QJsonDocument doc = QJsonDocument::fromJson(qtBytes, &parseError);
     if (parseError.error != QJsonParseError::NoError)
     {
         if (errorMessage)
         {
             *errorMessage = tr("JSON parse error: %1").arg(parseError.errorString());
         }
+        logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
         return false;
+    }
+    if (sanitized) {
+        qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
     }
 
     rootDoc_ = doc;
