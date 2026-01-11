@@ -5,11 +5,11 @@
 #include "core/ResourceLocator.h"
 #include "core/SaveDecoder.h"
 #include "core/SaveEncoder.h"
+#include "core/SaveJsonModel.h"
 #include "core/Utf8Diagnostics.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QJsonParseError>
 #include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -24,6 +24,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
+#include <QJsonParseError>
 
 namespace {
 const char *kMappingFile = "mapping.json";
@@ -43,6 +44,10 @@ const char *kKeyShipName = "NKm";
 const char *kKeyShipNameLong = "Name";
 const char *kKeyResource = "NTx";
 const char *kKeyResourceLong = "Resource";
+const char *kKeyShipResource = ":dY";
+const char *kKeyShipResourceLong = "ShipResource";
+const char *kKeyCurrentShip = "oJJ";
+const char *kKeyCurrentShipLong = "CurrentShip";
 const char *kKeyFilename = "93M";
 const char *kKeyFilenameLong = "Filename";
 const char *kKeySeed = "@EL";
@@ -120,6 +125,36 @@ QJsonValue findMappedKey(const QJsonValue &value, const QString &key)
     return {};
 }
 
+QJsonObject findTopLevelMappedObject(const QJsonObject &root, const QString &key)
+{
+    auto it = root.find(key);
+    if (it != root.end()) {
+        return it.value().toObject();
+    }
+    ensureMappingLoaded();
+    for (auto it = root.begin(); it != root.end(); ++it) {
+        if (JsonMapper::mapKey(it.key()) == key) {
+            return it.value().toObject();
+        }
+    }
+    return QJsonObject();
+}
+
+QString findTopLevelMappedKeyName(const QJsonObject &root, const QString &key)
+{
+    auto it = root.find(key);
+    if (it != root.end()) {
+        return it.key();
+    }
+    ensureMappingLoaded();
+    for (auto it = root.begin(); it != root.end(); ++it) {
+        if (JsonMapper::mapKey(it.key()) == key) {
+            return it.key();
+        }
+    }
+    return QString();
+}
+
 QString filenameForType(const QString &type)
 {
     if (type == "Fighter") {
@@ -183,6 +218,85 @@ QString seedTextFromValue(const QJsonValue &value)
     return value.toVariant().toString();
 }
 
+QString formattedSeedHex(qulonglong seed)
+{
+    return QStringLiteral("0x%1").arg(QString::number(seed, 16).toUpper());
+}
+
+QJsonObject resourceObjectFromShip(const QJsonObject &ship)
+{
+    QJsonObject resource = ship.value(kKeyResourceLong).toObject();
+    if (resource.isEmpty()) {
+        resource = ship.value(kKeyResource).toObject();
+    }
+    return resource;
+}
+
+QString resourceFilename(const QJsonObject &resource)
+{
+    QString filename = resource.value(kKeyFilenameLong).toString();
+    if (filename.isEmpty()) {
+        filename = resource.value(kKeyFilename).toString();
+    }
+    return filename.trimmed();
+}
+
+QString resourceSeedText(const QJsonObject &resource)
+{
+    QJsonValue value = resource.value(kKeySeedLong);
+    if (value.isUndefined()) {
+        value = resource.value(kKeySeed);
+    }
+    return seedTextFromValue(value).trimmed();
+}
+
+bool resourceMatches(const QJsonObject &candidate, const QJsonObject &reference)
+{
+    QString refFilename = resourceFilename(reference);
+    QString refSeed = resourceSeedText(reference);
+    if (refFilename.isEmpty() && refSeed.isEmpty()) {
+        return false;
+    }
+    QString candFilename = resourceFilename(candidate);
+    QString candSeed = resourceSeedText(candidate);
+    if (!refFilename.isEmpty() && !candFilename.isEmpty()
+        && refFilename == candFilename && refSeed == candSeed) {
+        return true;
+    }
+    return !refSeed.isEmpty() && refSeed == candSeed;
+}
+
+void collectResourcePaths(const QJsonValue &value, const QVariantList &prefix, QList<QVariantList> &out)
+{
+    if (value.isObject()) {
+        QJsonObject obj = value.toObject();
+        for (auto it = obj.begin(); it != obj.end(); ++it) {
+            QString mapped = JsonMapper::isLoaded() ? JsonMapper::mapKey(it.key()) : QString();
+            const QString &key = it.key();
+            bool isResourceKey = (key == kKeyShipResourceLong || key == kKeyShipResource
+                                  || key == kKeyCurrentShipLong || key == kKeyCurrentShip);
+            if (!isResourceKey && !mapped.isEmpty()) {
+                isResourceKey = (mapped == kKeyShipResourceLong || mapped == kKeyCurrentShipLong);
+            }
+            if (isResourceKey && it.value().isObject()) {
+                QVariantList path = prefix;
+                path << key;
+                out.append(path);
+            }
+            QVariantList nextPrefix = prefix;
+            nextPrefix << key;
+            collectResourcePaths(it.value(), nextPrefix, out);
+        }
+    } else if (value.isArray()) {
+        QJsonArray array = value.toArray();
+        for (int i = 0; i < array.size(); ++i) {
+            QVariantList nextPrefix = prefix;
+            nextPrefix << i;
+            collectResourcePaths(array.at(i), nextPrefix, out);
+        }
+    }
+}
+
 bool isEmptyShipSlot(const QJsonObject &ship)
 {
     QString name = ship.value(kKeyShipNameLong).toString();
@@ -219,9 +333,7 @@ void setSeedValue(QJsonObject &resource, const QString &raw)
     if (!ok) {
         return;
     }
-    QString formatted = raw.startsWith("0x", Qt::CaseInsensitive)
-                            ? raw
-                            : QString("0x%1").arg(seed, 0, 16).toUpper();
+    QString formatted = formattedSeedHex(seed);
     if (resource.contains(kKeySeedLong)) {
         QJsonValue seedValue = resource.value(kKeySeedLong);
         if (seedValue.isArray()) {
@@ -320,6 +432,9 @@ bool ShipManagerPage::loadFromFile(const QString &filePath, QString *errorMessag
     losslessDoc_ = lossless;
     currentFilePath_ = filePath;
     hasUnsavedChanges_ = false;
+    if (!syncRootFromLossless(errorMessage)) {
+        return false;
+    }
     updateActiveContext();
     rebuildShipList();
     return true;
@@ -597,18 +712,16 @@ void ShipManagerPage::updateActiveContext()
         return;
     }
     QJsonObject root = rootDoc_.object();
-    QString context = root.value(kKeyActiveContext).toString();
+    QJsonValue rootValue = root;
+    QString context = findMappedKey(rootValue, QStringLiteral("ActiveContext")).toString();
     if (context.isEmpty()) {
-        context = root.value(kKeyActiveContextLong).toString();
+        context = root.value(kKeyActiveContext).toString();
     }
     QString normalized = context.trimmed().toLower();
     if (normalized.isEmpty() || normalized == QString(kKeyContextMain).toLower()) {
         return;
     }
-    QJsonObject expedition = root.value(kKeyExpeditionContext).toObject();
-    if (expedition.isEmpty()) {
-        expedition = root.value(kKeyExpeditionContextLong).toObject();
-    }
+    QJsonObject expedition = findTopLevelMappedObject(root, QStringLiteral("ExpeditionContext"));
     if (expedition.contains("6f=") || expedition.contains(kKeyPlayerStateLong)) {
         usingExpeditionContext_ = true;
     }
@@ -700,7 +813,12 @@ QJsonObject ShipManagerPage::activePlayerState() const
 
 QVariantList ShipManagerPage::shipOwnershipPath() const
 {
-    if (usingExpeditionContext_) {
+    return shipOwnershipPathForContext(usingExpeditionContext_);
+}
+
+QVariantList ShipManagerPage::shipOwnershipPathForContext(bool expedition) const
+{
+    if (expedition) {
         QVariantList shortPath = {kKeyExpeditionContext, "6f=", kKeyShipOwnership};
         if (valueAtPath(rootDoc_.object(), shortPath).isArray()) {
             return shortPath;
@@ -723,6 +841,79 @@ QVariantList ShipManagerPage::shipOwnershipPath() const
     }
     QVariantList longPath = {kKeyBaseContextLong, kKeyPlayerStateLong, kKeyShipOwnershipLong};
     return longPath;
+}
+
+QVariantList ShipManagerPage::playerStatePathForContext(bool expedition) const
+{
+    if (expedition) {
+        QVariantList shortPath = {kKeyExpeditionContext, "6f="};
+        if (valueAtPath(rootDoc_.object(), shortPath).isObject()) {
+            return shortPath;
+        }
+        QVariantList mixedPath = {kKeyExpeditionContext, kKeyPlayerStateLong};
+        if (valueAtPath(rootDoc_.object(), mixedPath).isObject()) {
+            return mixedPath;
+        }
+        QVariantList longPath = {kKeyExpeditionContextLong, kKeyPlayerStateLong};
+        if (valueAtPath(rootDoc_.object(), longPath).isObject()) {
+            return longPath;
+        }
+        QVariantList longAltPath = {kKeyExpeditionContextLong, "6f="};
+        if (valueAtPath(rootDoc_.object(), longAltPath).isObject()) {
+            return longAltPath;
+        }
+        return {};
+    }
+
+    QVariantList shortPath = {kKeyPlayerState, "6f="};
+    if (valueAtPath(rootDoc_.object(), shortPath).isObject()) {
+        return shortPath;
+    }
+    QVariantList mixedPath = {kKeyPlayerState, kKeyPlayerStateLong};
+    if (valueAtPath(rootDoc_.object(), mixedPath).isObject()) {
+        return mixedPath;
+    }
+    QVariantList longPath = {kKeyBaseContextLong, kKeyPlayerStateLong};
+    if (valueAtPath(rootDoc_.object(), longPath).isObject()) {
+        return longPath;
+    }
+    QVariantList longAltPath = {kKeyBaseContextLong, "6f="};
+    if (valueAtPath(rootDoc_.object(), longAltPath).isObject()) {
+        return longAltPath;
+    }
+    return {};
+}
+
+QVariantList ShipManagerPage::contextRootPathForContext(bool expedition) const
+{
+    if (!rootDoc_.isObject()) {
+        return {};
+    }
+    QJsonObject root = rootDoc_.object();
+    if (expedition) {
+        if (root.contains(kKeyExpeditionContext)) {
+            return {kKeyExpeditionContext};
+        }
+        if (root.contains(kKeyExpeditionContextLong)) {
+            return {kKeyExpeditionContextLong};
+        }
+        QString mappedKey = findTopLevelMappedKeyName(root, QStringLiteral("ExpeditionContext"));
+        if (!mappedKey.isEmpty()) {
+            return {mappedKey};
+        }
+        return {};
+    }
+    if (root.contains(kKeyBaseContextLong)) {
+        return {kKeyBaseContextLong};
+    }
+    if (root.contains(kKeyPlayerState)) {
+        return {kKeyPlayerState};
+    }
+    QString mappedKey = findTopLevelMappedKeyName(root, QStringLiteral("BaseContext"));
+    if (!mappedKey.isEmpty()) {
+        return {mappedKey};
+    }
+    return {};
 }
 
 QJsonArray ShipManagerPage::shipOwnershipArray() const
@@ -748,10 +939,12 @@ void ShipManagerPage::updateShipAtIndex(int index, const std::function<void(QJso
     }
     QJsonObject ship = ships.at(index).toObject();
     QJsonObject original = ship;
+    QJsonObject oldResource = resourceObjectFromShip(original);
     mutator(ship);
     if (ship == original) {
         return;
     }
+    QJsonObject newResource = resourceObjectFromShip(ship);
     ships.replace(index, ship);
     applyValueAtPath(path, ships);
     emit statusMessage(tr("Pending changes — remember to Save!"));
@@ -766,6 +959,151 @@ void ShipManagerPage::updateShipAtIndex(int index, const std::function<void(QJso
         }
     }
     refreshShipFields(ship);
+
+    if (oldResource != newResource && !oldResource.isEmpty() && !newResource.isEmpty()) {
+        updatePlayerShipResources(oldResource, newResource);
+    }
+
+    if (usingExpeditionContext_) {
+        QVariantList basePath = shipOwnershipPathForContext(false);
+        if (!basePath.isEmpty() && basePath != path) {
+            updateShipAtIndexOnPath(basePath, index, mutator, false);
+        }
+    }
+}
+
+void ShipManagerPage::updateShipAtIndexOnPath(const QVariantList &path, int index,
+                                              const std::function<void(QJsonObject &)> &mutator,
+                                              bool updateUi)
+{
+    if (index < 0 || path.isEmpty()) {
+        return;
+    }
+    QJsonValue current = valueAtPath(rootDoc_.object(), path);
+    if (!current.isArray()) {
+        return;
+    }
+    QJsonArray ships = current.toArray();
+    if (index >= ships.size()) {
+        return;
+    }
+    QJsonObject ship = ships.at(index).toObject();
+    QJsonObject original = ship;
+    mutator(ship);
+    if (ship == original) {
+        return;
+    }
+    ships.replace(index, ship);
+    applyValueAtPath(path, ships);
+
+    if (!updateUi) {
+        return;
+    }
+    emit statusMessage(tr("Pending changes — remember to Save!"));
+    QString updatedName = shipNameFromObject(ship);
+    for (int i = 0; i < ships_.size(); ++i) {
+        if (ships_.at(i).index == index) {
+            ships_[i].name = updatedName;
+            shipCombo_->setItemText(i, tr("[%1] %2").arg(index).arg(updatedName.isEmpty()
+                                                                     ? tr("Ship %1").arg(index + 1)
+                                                                     : updatedName));
+            break;
+        }
+    }
+    refreshShipFields(ship);
+}
+
+void ShipManagerPage::updatePlayerShipResources(const QJsonObject &oldResource, const QJsonObject &newResource)
+{
+    QVariantList activePath = playerStatePathForContext(usingExpeditionContext_);
+    if (!activePath.isEmpty()) {
+        updatePlayerStateResourceAtPath(activePath, oldResource, newResource);
+    }
+    if (usingExpeditionContext_) {
+        QVariantList basePath = playerStatePathForContext(false);
+        if (!basePath.isEmpty() && basePath != activePath) {
+            updatePlayerStateResourceAtPath(basePath, oldResource, newResource);
+        }
+    }
+    QVariantList activeContextPath = contextRootPathForContext(usingExpeditionContext_);
+    if (!activeContextPath.isEmpty()) {
+        updateContextResources(activeContextPath, oldResource, newResource);
+    }
+    if (usingExpeditionContext_) {
+        QVariantList baseContextPath = contextRootPathForContext(false);
+        if (!baseContextPath.isEmpty() && baseContextPath != activeContextPath) {
+            updateContextResources(baseContextPath, oldResource, newResource);
+        }
+    }
+}
+
+bool ShipManagerPage::updatePlayerStateResourceAtPath(const QVariantList &path,
+                                                      const QJsonObject &oldResource,
+                                                      const QJsonObject &newResource)
+{
+    QJsonValue playerValue = valueAtPath(rootDoc_.object(), path);
+    if (!playerValue.isObject()) {
+        return false;
+    }
+    QJsonObject player = playerValue.toObject();
+    bool updated = false;
+
+    auto updateIfMatching = [&](const char *longKey, const char *shortKey) {
+        if (player.contains(longKey) && player.value(longKey).isObject()) {
+            QJsonObject existing = player.value(longKey).toObject();
+            if (resourceMatches(existing, oldResource)) {
+                player.insert(longKey, newResource);
+                updated = true;
+            }
+            return;
+        }
+        if (player.contains(shortKey) && player.value(shortKey).isObject()) {
+            QJsonObject existing = player.value(shortKey).toObject();
+            if (resourceMatches(existing, oldResource)) {
+                player.insert(shortKey, newResource);
+                updated = true;
+            }
+        }
+    };
+
+    updateIfMatching(kKeyShipResourceLong, kKeyShipResource);
+    updateIfMatching(kKeyCurrentShipLong, kKeyCurrentShip);
+
+    if (!updated) {
+        return false;
+    }
+    applyValueAtPath(path, player);
+    return true;
+}
+
+void ShipManagerPage::updateContextResources(const QVariantList &contextPath,
+                                             const QJsonObject &oldResource,
+                                             const QJsonObject &newResource)
+{
+    ensureMappingLoaded();
+    QJsonValue contextValue = contextPath.isEmpty()
+                                  ? QJsonValue(rootDoc_.object())
+                                  : valueAtPath(rootDoc_.object(), contextPath);
+    if (contextValue.isUndefined() || contextValue.isNull()) {
+        return;
+    }
+    QList<QVariantList> paths;
+    collectResourcePaths(contextValue, QVariantList(), paths);
+    if (paths.isEmpty()) {
+        return;
+    }
+    for (const QVariantList &relative : paths) {
+        QVariantList fullPath = contextPath;
+        fullPath.append(relative);
+        QJsonValue current = valueAtPath(rootDoc_.object(), fullPath);
+        if (!current.isObject()) {
+            continue;
+        }
+        QJsonObject existing = current.toObject();
+        if (resourceMatches(existing, oldResource)) {
+            applyValueAtPath(fullPath, newResource);
+        }
+    }
 }
 
 void ShipManagerPage::updateShipInventoryClass(QJsonObject &ship, const QString &value)
@@ -863,15 +1201,13 @@ void ShipManagerPage::applyValueAtPath(const QVariantList &path, const QJsonValu
     if (valueAtPath(rootValue, path) == value) {
         return;
     }
-    QJsonValue updated = setValueAtPath(rootValue, path, 0, value);
-    if (updated.isObject()) {
-        rootDoc_.setObject(updated.toObject());
-    } else if (updated.isArray()) {
-        rootDoc_.setArray(updated.toArray());
+    QVariantList remappedCheck = SaveJsonModel::remapPathToShort(path);
+    if (remappedCheck != path && valueAtPath(rootValue, remappedCheck) == value) {
+        return;
     }
-    if (losslessDoc_) {
-        losslessDoc_->setValueAtPath(path, value);
-    }
+
+    SaveJsonModel::setLosslessValue(losslessDoc_, path, value);
+    SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_);
     hasUnsavedChanges_ = true;
 }
 
@@ -1103,5 +1439,10 @@ QString ShipManagerPage::formatNumber(double value) const
 
 QString ShipManagerPage::formattedSeed(qulonglong seed) const
 {
-    return QStringLiteral("0x%1").arg(seed, 0, 16).toUpper();
+    return formattedSeedHex(seed);
+}
+
+bool ShipManagerPage::syncRootFromLossless(QString *errorMessage)
+{
+    return SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_, errorMessage);
 }

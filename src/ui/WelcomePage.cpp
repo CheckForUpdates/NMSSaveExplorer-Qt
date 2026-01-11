@@ -343,7 +343,7 @@ WelcomePage::WelcomePage(QWidget *parent)
     slotTable_->setStyleSheet(QStringLiteral("QTableWidget::item:selected { background: transparent; color: inherit; }"));
     
     QHeaderView *header = slotTable_->horizontalHeader();
-    header->setSectionResizeMode(QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(QHeaderView::Interactive);
     
     layout->addWidget(slotTable_);
 
@@ -367,7 +367,7 @@ WelcomePage::WelcomePage(QWidget *parent)
     saveTable_->setStyleSheet(QStringLiteral("QTableWidget::item:selected { background: transparent; color: inherit; }"));
 
     QHeaderView *saveHeader = saveTable_->horizontalHeader();
-    saveHeader->setSectionResizeMode(QHeaderView::ResizeToContents);
+    saveHeader->setSectionResizeMode(QHeaderView::Interactive);
 
     layout->addWidget(saveTable_);
 
@@ -469,6 +469,7 @@ void WelcomePage::setSlots(const QList<SaveSlot> &saveSlots)
         lastSaveItem->setData(Qt::UserRole + 2, slotTable_->palette().brush(QPalette::Text));
         slotTable_->setItem(row, 5, lastSaveItem);
     }
+    slotTable_->resizeColumnsToContents();
     if (!saveSlots.isEmpty()) {
         headingLabel_->setText(tr("Detected %1 save slot(s).").arg(saveSlots.size()));
     } else {
@@ -566,6 +567,7 @@ void WelcomePage::updateSaveFilesTable(const SaveSlot &slot)
         syncedItem->setData(Qt::UserRole + 2, saveTable_->palette().brush(QPalette::Text));
         saveTable_->setItem(row, 2, syncedItem);
     }
+    saveTable_->resizeColumnsToContents();
 
     if (loadedRow >= 0) {
         setRowBold(saveTable_, loadedRow, true);
@@ -718,6 +720,7 @@ void WelcomePage::setRowBold(QTableWidget *table, int row, bool bold)
             item->setData(Qt::ForegroundRole, brush);
         }
     }
+    table->resizeColumnsToContents();
 }
 
 void WelcomePage::updateSlotSelection(int row)

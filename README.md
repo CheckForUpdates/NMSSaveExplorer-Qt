@@ -35,11 +35,11 @@ Qt6 (Widgets + Xml) is required. On Windows, use the Qt installer, choose Custom
 
 ### Windows (zip)
 ```bash
-cmake -S . -B build
-cmake --build build --config Release
-cmake --install build --config Release --prefix build/package
-windeployqt build/package/bin/NMSSaveExplorer-Qt.exe
-cmake -E tar "cfv" build/NMSSaveExplorer-Qt-windows.zip --format=zip build/package
+cmake -S . -B winbuild
+cmake --build winbuild --config Release
+cmake --install winbuild --config Release --prefix winbuild/package
+windeployqt winbuild/package/bin/NMSSaveExplorer-Qt.exe
+cmake -E tar "cfv" winbuild/NMSSaveExplorer-Qt-windows.zip --format=zip winbuild/package
 ```
 
 ### macOS (dmg)

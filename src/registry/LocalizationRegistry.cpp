@@ -30,11 +30,12 @@ bool LocalizationRegistry::isLoaded()
 
 void LocalizationRegistry::ensureLoaded()
 {
-    if (loaded_) {
+    if (loaded_ && !entries_.isEmpty()) {
         return;
     }
+    entries_.clear();
     loadDefinitions();
-    loaded_ = true;
+    loaded_ = !entries_.isEmpty();
 }
 
 void LocalizationRegistry::loadDefinitions()
@@ -110,24 +111,51 @@ void LocalizationRegistry::loadLocalizationFile(const QString &path)
 QString LocalizationRegistry::findLocalizationRoot()
 {
     QString resourceRoot = ResourceLocator::resourcesRoot();
+    QStringList roots;
     if (!resourceRoot.isEmpty()) {
+        roots << resourceRoot;
         QDir resourceDir(resourceRoot);
-        if (resourceDir.exists("localization")) {
-            return resourceDir.filePath("localization");
-        }
         QDir parent = resourceDir;
-        if (parent.cdUp() && parent.exists("localization")) {
-            return parent.filePath("localization");
+        for (int i = 0; i < 4; ++i) {
+            if (!parent.cdUp()) {
+                break;
+            }
+            roots << parent.absolutePath();
         }
     }
 
-    QDir dir(QCoreApplication::applicationDirPath());
+    QDir appDir(QCoreApplication::applicationDirPath());
     for (int i = 0; i < 8; ++i) {
+        roots << appDir.absolutePath();
+        if (!appDir.cdUp()) {
+            break;
+        }
+    }
+
+    QDir cwd(QDir::currentPath());
+    for (int i = 0; i < 8; ++i) {
+        roots << cwd.absolutePath();
+        if (!cwd.cdUp()) {
+            break;
+        }
+    }
+
+    roots.removeDuplicates();
+    for (const QString &root : roots) {
+        QDir dir(root);
         if (dir.exists("localization")) {
             return dir.filePath("localization");
         }
-        if (!dir.cdUp()) {
-            break;
+        if (dir.exists("data")) {
+            QDir dataDir(dir.filePath("data"));
+            QStringList files = dataDir.entryList(QStringList() << "nms_loc*_usenglish.MXML", QDir::Files);
+            if (!files.isEmpty()) {
+                return dataDir.absolutePath();
+            }
+        }
+        QStringList files = dir.entryList(QStringList() << "nms_loc*_usenglish.MXML", QDir::Files);
+        if (!files.isEmpty()) {
+            return dir.absolutePath();
         }
     }
     return {};

@@ -63,6 +63,11 @@ void logMessageHandler(QtMsgType type, const QMessageLogContext &context, const 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+    {
+        QPalette palette = app.palette();
+        palette.setColor(QPalette::PlaceholderText, QColor(138, 138, 138));
+        app.setPalette(palette);
+    }
     qInstallMessageHandler(logMessageHandler);
     qInfo() << "NMSSaveExplorer-Qt starting.";
     qRegisterMetaType<SaveSlot>();

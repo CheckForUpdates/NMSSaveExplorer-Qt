@@ -55,6 +55,7 @@ private:
     QJsonValue setValueAtPath(const QJsonValue &root, const QVariantList &path, int depth,
                               const QJsonValue &value) const;
     void applyValueAtPath(const QVariantList &path, const QJsonValue &value);
+    bool syncRootFromLossless(QString *errorMessage = nullptr);
 
     QComboBox *settlementCombo_ = nullptr;
     QScrollArea *scrollArea_ = nullptr;

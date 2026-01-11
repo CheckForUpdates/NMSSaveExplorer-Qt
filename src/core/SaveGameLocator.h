@@ -35,6 +35,7 @@ class SaveGameLocator
 {
 public:
     static QList<SaveSlot> discoverSaveSlots();
+    static QList<SaveSlot> scanDirectory(const QString &path);
 };
 
 Q_DECLARE_METATYPE(SaveSlot)

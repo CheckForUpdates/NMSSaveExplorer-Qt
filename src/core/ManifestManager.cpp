@@ -42,6 +42,18 @@ QString decodeLocationCandidate(const char *data, int byteOffset, int totalBytes
         return QString();
     }
     QByteArray bytes(data + byteOffset, 64);
+    
+    // Find first null or non-printable character to truncate
+    int actualSize = 0;
+    while (actualSize < bytes.size()) {
+        unsigned char c = static_cast<unsigned char>(bytes[actualSize]);
+        if (c < 32 || c == 127) {
+            break;
+        }
+        actualSize++;
+    }
+    bytes.truncate(actualSize);
+
     QString text = QString::fromUtf8(bytes).trimmed();
     int leading = 0;
     while (leading < text.size() && !text.at(leading).isLetterOrNumber()) {

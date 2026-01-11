@@ -30,6 +30,7 @@ private:
     static void parseProductTable(QHash<QString, ItemEntry> &entries);
     static void parseSubstanceTable(QHash<QString, ItemEntry> &entries);
     static void parseTechnologyTable(QHash<QString, ItemEntry> &entries);
+    static void parseProceduralTechnologyTable(QHash<QString, ItemEntry> &entries);
 
     static int readIntAttribute(const QString &value, int fallback);
     static QString normalizeId(const QString &value);

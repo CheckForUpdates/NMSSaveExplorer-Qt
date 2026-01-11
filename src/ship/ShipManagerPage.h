@@ -41,9 +41,19 @@ private:
     QJsonObject activePlayerState() const;
     QJsonArray shipOwnershipArray() const;
     QVariantList shipOwnershipPath() const;
+    QVariantList shipOwnershipPathForContext(bool expedition) const;
+    QVariantList playerStatePathForContext(bool expedition) const;
+    QVariantList contextRootPathForContext(bool expedition) const;
     void updateShipAtIndex(int index, const std::function<void(QJsonObject &)> &mutator);
+    void updateShipAtIndexOnPath(const QVariantList &path, int index,
+                                 const std::function<void(QJsonObject &)> &mutator, bool updateUi);
     void updateShipResource(QJsonObject &ship, const std::function<void(QJsonObject &)> &mutator);
     void updateShipInventoryClass(QJsonObject &ship, const QString &value);
+    void updatePlayerShipResources(const QJsonObject &oldResource, const QJsonObject &newResource);
+    bool updatePlayerStateResourceAtPath(const QVariantList &path, const QJsonObject &oldResource,
+                                         const QJsonObject &newResource);
+    void updateContextResources(const QVariantList &contextPath, const QJsonObject &oldResource,
+                                const QJsonObject &newResource);
 
     QJsonValue valueAtPath(const QJsonValue &root, const QVariantList &path) const;
     QJsonValue setValueAtPath(const QJsonValue &root, const QVariantList &path, int depth,
@@ -60,6 +70,7 @@ private:
     QJsonObject inventoryObjectForShip(const QJsonObject &ship) const;
     QString formatNumber(double value) const;
     QString formattedSeed(qulonglong seed) const;
+    bool syncRootFromLossless(QString *errorMessage = nullptr);
 
     QScrollArea *scrollArea_ = nullptr;
     QWidget *formWidget_ = nullptr;
