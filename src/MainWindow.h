@@ -25,6 +25,9 @@ class ShipManagerPage;
 class WelcomePage;
 class LoadingOverlay;
 class BackupsPage;
+class CorvetteManagerPage;
+class KnownTechnologyPage;
+class KnownProductPage;
 
 class MainWindow : public QMainWindow
 {
@@ -46,6 +49,7 @@ private:
     void buildMenus();
     void refreshSaveSlots();
     void browseForSave();
+    void browseForSaveDirectory();
     void loadSelectedSave();
     void loadSavePath(const QString &path);
     void openJsonEditor();
@@ -55,12 +59,16 @@ private:
     void openStorageManager();
     void openSettlementManager();
     void openShipManager();
+    void openCorvetteManager();
     void openMaterialLookup();
+    void openKnownTechnologyEditor();
+    void openKnownProductEditor();
     void saveChanges();
     void syncOtherSave();
     void undoSync();
     void setStatus(const QString &text);
     void selectPage(const QString &key);
+    bool ensureSaveLoaded();
     bool hasPendingChanges() const;
     void updateHomeSaveEnabled();
     QString resolveLatestSavePath(const SaveSlot &slot) const;
@@ -94,10 +102,14 @@ private:
     InventoryEditorPage *storageManagerPage_ = nullptr;
     SettlementManagerPage *settlementPage_ = nullptr;
     ShipManagerPage *shipManagerPage_ = nullptr;
+    CorvetteManagerPage *corvetteManagerPage_ = nullptr;
+    KnownTechnologyPage *knownTechnologyPage_ = nullptr;
+    KnownProductPage *knownProductPage_ = nullptr;
     QLabel *statusLabel_ = nullptr;
     QFileSystemWatcher *saveWatcher_ = nullptr;
     LoadingOverlay *loadingOverlay_ = nullptr;
     BackupsPage *backupsPage_ = nullptr;
+    QAction *saveAction_ = nullptr;
     QFutureWatcher<LoadResult> loadingWatcher_;
     bool ignoreNextFileChange_ = false;
     bool syncPending_ = false;

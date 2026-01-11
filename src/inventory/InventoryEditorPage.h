@@ -91,6 +91,7 @@ private:
 
     QString formatStatId(const QString &id) const;
     QString formatExpeditionToken(const QString &raw) const;
+    bool syncRootFromLossless(QString *errorMessage = nullptr);
     QString formatQuantity(double value) const;
     bool isDecryptMissionUnlocked(const QJsonObject &encryption) const;
     void updateDecryptMissionProgress(const QJsonObject &encryption, int progressValue);

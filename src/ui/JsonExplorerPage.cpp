@@ -4,7 +4,10 @@
 #include "core/ResourceLocator.h"
 #include "core/SaveDecoder.h"
 #include "core/SaveEncoder.h"
+#include "core/SaveJsonModel.h"
 #include "core/Utf8Diagnostics.h"
+
+#include <rapidjson/document.h>
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -127,16 +130,18 @@ JsonExplorerPage::JsonExplorerPage(QWidget *parent)
             QString key = pathKey(path);
             QJsonValue original = originalValues_.value(key);
             if (!original.isUndefined()) {
-                QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
-                                                          : QJsonValue(rootDoc_.array());
-                QJsonValue updated = setValueAtPath(rootValue, path, 0, original);
-                if (updated.isObject()) {
-                    rootDoc_.setObject(updated.toObject());
-                } else if (updated.isArray()) {
-                    rootDoc_.setArray(updated.toArray());
-                }
                 if (losslessDoc_) {
-                    losslessDoc_->setValueAtPath(path, original);
+                    SaveJsonModel::setLosslessValue(losslessDoc_, path, original);
+                    SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_);
+                } else {
+                    QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
+                                                              : QJsonValue(rootDoc_.array());
+                    QJsonValue updated = setValueAtPath(rootValue, path, 0, original);
+                    if (updated.isObject()) {
+                        rootDoc_.setObject(updated.toObject());
+                    } else if (updated.isArray()) {
+                        rootDoc_.setArray(updated.toArray());
+                    }
                 }
                 clearModified(item);
                 loadEditorForItem(item);
@@ -216,6 +221,9 @@ bool JsonExplorerPage::loadFromFile(const QString &filePath, QString *errorMessa
     rootDoc_ = doc;
     losslessDoc_ = lossless;
     currentFilePath_ = filePath;
+    if (!syncRootFromLossless(errorMessage)) {
+        return false;
+    }
     modifiedItems_.clear();
     originalValues_.clear();
     qInfo() << "Building JSON tree.";
@@ -365,6 +373,46 @@ void JsonExplorerPage::populateChildren(QStandardItem *parent)
         return;
     }
     QVariantList path = parent->data(kPathRole).toList();
+    const rapidjson::Value *losslessValue = losslessValueAtPath(path);
+    if (losslessValue) {
+        parent->removeRows(0, parent->rowCount());
+
+        if (losslessValue->IsObject()) {
+            for (auto it = losslessValue->MemberBegin(); it != losslessValue->MemberEnd(); ++it) {
+                QString key = QString::fromUtf8(it->name.GetString(),
+                                                static_cast<int>(it->name.GetStringLength()));
+                QString mapped = JsonMapper::mapKey(key);
+                QVariantList childPath = path;
+                childPath.append(key);
+                QStandardItem *child = new QStandardItem(mapped);
+                child->setData(childPath, kPathRole);
+                child->setData(false, kPopulatedRole);
+                parent->appendRow(child);
+                originalValues_.insert(pathKey(childPath), valueAtPath(childPath));
+                if (it->value.IsObject() || it->value.IsArray()) {
+                    child->appendRow(new QStandardItem(tr("Loading...")));
+                }
+            }
+            return;
+        }
+        if (losslessValue->IsArray()) {
+            for (rapidjson::SizeType i = 0; i < losslessValue->Size(); ++i) {
+                QVariantList childPath = path;
+                childPath.append(static_cast<int>(i));
+                QStandardItem *child = new QStandardItem(QString("[%1]").arg(i));
+                child->setData(childPath, kPathRole);
+                child->setData(false, kPopulatedRole);
+                parent->appendRow(child);
+                originalValues_.insert(pathKey(childPath), valueAtPath(childPath));
+                const rapidjson::Value &element = (*losslessValue)[i];
+                if (element.IsObject() || element.IsArray()) {
+                    child->appendRow(new QStandardItem(tr("Loading...")));
+                }
+            }
+            return;
+        }
+    }
+
     QJsonValue value = valueAtPath(path);
     parent->removeRows(0, parent->rowCount());
 
@@ -395,6 +443,41 @@ void JsonExplorerPage::populateChildren(QStandardItem *parent)
             addPlaceholderIfNeeded(child, element);
         }
     }
+}
+
+const rapidjson::Value *JsonExplorerPage::losslessValueAtPath(const QVariantList &path) const
+{
+    if (!losslessDoc_) {
+        return nullptr;
+    }
+    const rapidjson::Value *node = &losslessDoc_->root();
+    for (const QVariant &segment : path) {
+        if (segment.canConvert<int>()) {
+            if (!node->IsArray()) {
+                return nullptr;
+            }
+            int index = segment.toInt();
+            if (index < 0 || index >= static_cast<int>(node->Size())) {
+                return nullptr;
+            }
+            node = &(*node)[static_cast<rapidjson::SizeType>(index)];
+            continue;
+        }
+        if (segment.canConvert<QString>()) {
+            if (!node->IsObject()) {
+                return nullptr;
+            }
+            QByteArray key = segment.toString().toUtf8();
+            auto it = node->FindMember(key.constData());
+            if (it == node->MemberEnd()) {
+                return nullptr;
+            }
+            node = &it->value;
+            continue;
+        }
+        return nullptr;
+    }
+    return node;
 }
 
 void JsonExplorerPage::addPlaceholderIfNeeded(QStandardItem *item, const QJsonValue &value)
@@ -744,17 +827,19 @@ bool JsonExplorerPage::commitEditor()
         clearModified(currentItem_);
         return true;
     }
-    
-    QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
-                                               : QJsonValue(rootDoc_.array());
-    QJsonValue updated = setValueAtPath(rootValue, path, 0, remapped);
-    if (updated.isObject()) {
-        rootDoc_.setObject(updated.toObject());
-    } else if (updated.isArray()) {
-        rootDoc_.setArray(updated.toArray());
-    }
+
     if (losslessDoc_) {
-        losslessDoc_->setValueAtPath(path, remapped);
+        SaveJsonModel::setLosslessValue(losslessDoc_, path, remapped);
+        SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_);
+    } else {
+        QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
+                                                   : QJsonValue(rootDoc_.array());
+        QJsonValue updated = setValueAtPath(rootValue, path, 0, remapped);
+        if (updated.isObject()) {
+            rootDoc_.setObject(updated.toObject());
+        } else if (updated.isArray()) {
+            rootDoc_.setArray(updated.toArray());
+        }
     }
 
     markModified(currentItem_);
@@ -966,4 +1051,9 @@ void JsonExplorerPage::ensureMappingLoaded()
     for (auto it = map.begin(); it != map.end(); ++it) {
         reverseMapping_.insert(it.value(), it.key());
     }
+}
+
+bool JsonExplorerPage::syncRootFromLossless(QString *errorMessage)
+{
+    return SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_, errorMessage);
 }

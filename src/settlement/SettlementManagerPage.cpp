@@ -2,16 +2,23 @@
 
 #include "core/SaveDecoder.h"
 #include "core/SaveEncoder.h"
+#include "core/SaveJsonModel.h"
+#include "core/ResourceLocator.h"
 #include "core/Utf8Diagnostics.h"
 #include "registry/ItemDefinitionRegistry.h"
+#include "registry/LocalizationRegistry.h"
 
+#include <algorithm>
 #include <climits>
 #include <functional>
 #include <QComboBox>
+#include <QDialog>
+#include <QDomDocument>
 #include <QFile>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QIntValidator>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -21,8 +28,12 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QListWidgetItem>
+#include <QMessageBox>
 #include <QPushButton>
+#include <QRandomGenerator>
 #include <QScrollArea>
+#include <QTableWidget>
 #include <QVBoxLayout>
 
 namespace {
@@ -78,10 +89,282 @@ const char *kKeySentinelAttackCount = "A<w";
 const char *kKeySettlerDeathCount = "qr=";
 const char *kKeyBugAttackCount = "oCR";
 const char *kKeyJudgementsSettled = "9=d";
+
 const char *kKeySettlementStatsLong = "Stats";
 const char *kKeySettlementStatsShort = "gUR";
 const char *kKeySettlementPerks = "OEf";
 const char *kKeySettlementPerksLong = "Perks";
+
+QHash<QString, QString> g_settlementPerkMap;
+QHash<QString, QString> g_settlementPerkStats;
+QHash<QString, bool> g_settlementPerkIsNegative;
+QSet<QString> g_procPerks;
+bool g_settlementPerksLoaded = false;
+
+const QHash<QString, QString> kProcFriendlyNames = {
+    {"PROC_FACT", "Random Factory"},
+    {"PROC_FARM", "Random Farm"},
+    {"PROC_BAR", "Random Bar"},
+    {"PROC_SHOP", "Random Shop"},
+    {"PROC_FACI", "Random Facility"},
+    {"PROC_JOB", "Random Job"},
+    {"PROC_TECH", "Random Technology"},
+    {"PROC_COST", "Random Maintenance Effect"},
+    {"PROC_POP", "Random Population Effect"},
+    {"PROC_FUN", "Random Happiness Effect"},
+    {"PROC_SENT", "Random Sentinel Effect"},
+    {"PROC_BUI", "Random Building Perk"},
+    {"POL_MOOD", "Policy: Happiness"},
+    {"POL_COST", "Policy: Maintenance"},
+    {"POL_PROD", "Policy: Production"}
+};
+
+void loadSettlementPerks() {
+    if (g_settlementPerksLoaded) return;
+    
+    QString path = ResourceLocator::resolveResource("data/settlementperkstable.MXML");
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        g_settlementPerksLoaded = true;
+        return;
+    }
+
+    QDomDocument doc;
+    if (doc.setContent(&file)) {
+        QDomNodeList nodes = doc.elementsByTagName("Property");
+        for (int i = 0; i < nodes.count(); ++i) {
+            QDomElement element = nodes.at(i).toElement();
+            if (element.attribute("value") == "GcSettlementPerkData") {
+                QString id;
+                QString nameToken;
+                QStringList statDesc;
+                bool isProc = false;
+                bool isNegative = false;
+                
+                QDomElement child = element.firstChildElement("Property");
+                while (!child.isNull()) {
+                    QString attrName = child.attribute("name");
+                    if (attrName == "ID") id = child.attribute("value");
+                    else if (attrName == "Name") nameToken = child.attribute("value");
+                    else if (attrName == "IsProc") isProc = (child.attribute("value") == "true");
+                    else if (attrName == "IsNegative") isNegative = (child.attribute("value") == "true");
+                    else if (attrName == "StatChanges") {
+                        QDomElement change = child.firstChildElement("Property");
+                        while (!change.isNull()) {
+                            QString statType, strength;
+                            QDomElement prop = change.firstChildElement("Property");
+                            while (!prop.isNull()) {
+                                QString pName = prop.attribute("name");
+                                if (pName == "Stat") statType = prop.firstChildElement("Property").attribute("value");
+                                else if (pName == "Strength") strength = prop.firstChildElement("Property").attribute("value");
+                                prop = prop.nextSiblingElement("Property");
+                            }
+                            if (!statType.isEmpty()) {
+                                statDesc << QString("%1 (%2)").arg(statType, strength);
+                            }
+                            change = change.nextSiblingElement("Property");
+                        }
+                    }
+                    child = child.nextSiblingElement("Property");
+                }
+                if (!id.isEmpty()) {
+                    QString upperId = id.toUpper();
+                    QString resolvedName = LocalizationRegistry::resolveToken(nameToken);
+                    
+                    bool isPlaceholderName = resolvedName.isEmpty() || 
+                                             resolvedName == "%GREEK%" || 
+                                             resolvedName.contains("PLACEHOLDER", Qt::CaseInsensitive) ||
+                                             (resolvedName.contains("%") && resolvedName.count('%') >= 2);
+
+                    if (isProc) {
+                        g_procPerks.insert(upperId);
+                    } else if (isPlaceholderName) {
+                        continue;
+                    }
+
+                    if (!nameToken.isEmpty()) g_settlementPerkMap.insert(upperId, nameToken);
+                    if (!statDesc.isEmpty()) g_settlementPerkStats.insert(upperId, statDesc.join(", "));
+                    g_settlementPerkIsNegative.insert(upperId, isNegative);
+                }
+            }
+        }
+    }
+    g_settlementPerksLoaded = true;
+}
+
+class PerkSelectionDialog : public QDialog
+{
+public:
+    explicit PerkSelectionDialog(QWidget *parent = nullptr) : QDialog(parent)
+    {
+        setWindowTitle(QObject::tr("Add Settlement Perk"));
+        setMinimumSize(800, 600);
+        auto *layout = new QVBoxLayout(this);
+
+        auto *searchRow = new QHBoxLayout();
+        auto *searchField = new QLineEdit(this);
+        searchField->setPlaceholderText(QObject::tr("Search perks..."));
+        searchRow->addWidget(searchField);
+
+        auto *addBtn = new QPushButton(QObject::tr("Add"), this);
+        auto *cancelBtn = new QPushButton(QObject::tr("Cancel"), this);
+        addBtn->setFixedSize(100, 26);
+        cancelBtn->setFixedSize(100, 26);
+        searchRow->addWidget(addBtn);
+        searchRow->addWidget(cancelBtn);
+        layout->addLayout(searchRow);
+
+        auto *table = new QTableWidget(this);
+        table->setColumnCount(2);
+        table->setHorizontalHeaderLabels({QObject::tr("Perk Name"), QObject::tr("Effects")});
+        table->horizontalHeader()->setStretchLastSection(true);
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->setSelectionMode(QAbstractItemView::SingleSelection);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        layout->addWidget(table);
+
+        loadSettlementPerks();
+        struct PerkEntry { QString id; QString name; QString stats; bool isProc; bool isNegative; };
+        QList<PerkEntry> allPerks;
+        
+        for (auto it = g_settlementPerkMap.begin(); it != g_settlementPerkMap.end(); ++it) {
+            QString id = it.key();
+            bool isProc = g_procPerks.contains(id);
+            QString name;
+            if (isProc && kProcFriendlyNames.contains(id)) {
+                name = kProcFriendlyNames.value(id);
+            } else {
+                name = LocalizationRegistry::resolveToken(it.value());
+            }
+            
+            if (name.isEmpty()) name = id;
+            QString stats = g_settlementPerkStats.value(id);
+            bool isNeg = g_settlementPerkIsNegative.value(id, false);
+            allPerks.append({id, name, stats, isProc, isNeg});
+        }
+        
+        std::sort(allPerks.begin(), allPerks.end(), [](const PerkEntry &a, const PerkEntry &b) {
+            if (a.isProc != b.isProc) return a.isProc < b.isProc; // Regular perks first
+            return a.name.toLower() < b.name.toLower();
+        });
+
+        table->setRowCount(allPerks.size());
+        for (int i = 0; i < allPerks.size(); ++i) {
+            const auto &p = allPerks.at(i);
+            auto *nameItem = new QTableWidgetItem(p.name);
+            nameItem->setData(Qt::UserRole, p.id);
+            nameItem->setData(Qt::UserRole + 1, p.isProc);
+            if (p.isProc) {
+                nameItem->setForeground(QColor(0, 170, 255)); // Highlight blue
+            }
+            table->setItem(i, 0, nameItem);
+            
+            auto *statsItem = new QTableWidgetItem(p.stats);
+            if (p.isNegative) {
+                statsItem->setForeground(QColor(220, 45, 45)); // Red
+            } else if (!p.stats.isEmpty()) {
+                statsItem->setForeground(QColor(46, 165, 81)); // Green
+            }
+            table->setItem(i, 1, statsItem);
+        }
+        table->resizeColumnToContents(0);
+
+        layout->addSpacing(8);
+        auto *noteLabel = new QLabel(QObject::tr("* Blue Perk Names are procedural templates; a random seed will be generated to determine the final name/effect in-game."), this);
+        noteLabel->setStyleSheet("color: white; font-style: italic;");
+        layout->addWidget(noteLabel);
+
+        connect(searchField, &QLineEdit::textChanged, this, [table](const QString &text) {
+            for (int i = 0; i < table->rowCount(); ++i) {
+                QString rowText = table->item(i, 0)->text() + " " + table->item(i, 1)->text();
+                bool match = text.isEmpty() || rowText.contains(text, Qt::CaseInsensitive);
+                table->setRowHidden(i, !match);
+            }
+        });
+
+        connect(addBtn, &QPushButton::clicked, this, [this, table]() {
+            int row = table->currentRow();
+            if (row >= 0) {
+                selectedId_ = table->item(row, 0)->data(Qt::UserRole).toString();
+                isProc_ = table->item(row, 0)->data(Qt::UserRole + 1).toBool();
+                accept();
+            }
+        });
+        connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+        connect(table, &QTableWidget::cellDoubleClicked, this, [this, table](int row, int) {
+            selectedId_ = table->item(row, 0)->data(Qt::UserRole).toString();
+            isProc_ = table->item(row, 0)->data(Qt::UserRole + 1).toBool();
+            accept();
+        });
+    }
+
+    QString selectedId() const { return selectedId_; }
+    bool isProc() const { return isProc_; }
+
+private:
+    QString selectedId_;
+    bool isProc_ = false;
+};
+
+QString resolvePerkName(const QString &perkId) {
+    if (perkId.isEmpty()) return QString();
+    
+    loadSettlementPerks();
+    
+    QString id = perkId;
+    if (id.startsWith('^')) {
+        id.remove(0, 1);
+    }
+    
+    int hashIdx = id.indexOf('#');
+    QString seedSuffix;
+    if (hashIdx >= 0) {
+        seedSuffix = id.mid(hashIdx + 1);
+        id = id.left(hashIdx);
+    }
+    
+    QString upperId = id.toUpper();
+    bool isProc = g_procPerks.contains(upperId);
+    
+    if (isProc) {
+        QString baseName = kProcFriendlyNames.value(upperId, upperId);
+        if (!seedSuffix.isEmpty()) {
+            return QString("%1 (#%2)").arg(baseName, seedSuffix);
+        }
+        return baseName;
+    }
+
+    QStringList candidates;
+    
+    // Check if the ID itself has a mapping in the table
+    if (g_settlementPerkMap.contains(upperId)) {
+        candidates << g_settlementPerkMap.value(upperId);
+    }
+    
+    candidates << id;
+    
+    if (id.startsWith(QLatin1String("STARTING_POS"))) {
+        candidates << QLatin1String("UI_PERK_POSITIVE_TITLE_") + id.mid(12);
+    } else if (id.startsWith(QLatin1String("STARTING_NEG"))) {
+        candidates << QLatin1String("UI_PERK_NEGATIVE_TITLE_") + id.mid(12);
+    } else if (id.startsWith(QLatin1String("PROC_BUI"))) {
+        candidates << QLatin1String("UI_SETTLEMENT_PERK_PROC_BUI");
+    } else if (id.startsWith(QLatin1String("PROC_"))) {
+        candidates << QLatin1String("UI_SETTLEMENT_PERK_PROC_") + id.mid(5);
+    } else if (id.startsWith(QLatin1String("POP_"))) {
+        candidates << QLatin1String("UI_SETTLEMENT_PERK_POP_") + id.mid(4);
+    }
+
+    for (const QString &cand : candidates) {
+        QString resolved = LocalizationRegistry::resolveToken(cand);
+        if (!resolved.isEmpty()) return resolved;
+    }
+    
+    QString itemDisplay = ItemDefinitionRegistry::displayNameForId(perkId);
+    if (!itemDisplay.isEmpty()) return itemDisplay;
+    
+    return perkId;
+}
 }
 
 SettlementManagerPage::SettlementManagerPage(QWidget *parent)
@@ -146,6 +429,9 @@ bool SettlementManagerPage::loadFromFile(const QString &filePath, QString *error
     losslessDoc_ = lossless;
     currentFilePath_ = filePath;
     hasUnsavedChanges_ = false;
+    if (!syncRootFromLossless(errorMessage)) {
+        return false;
+    }
     updateActiveContext();
     resolveSettlementStatesPath();
     rebuildSettlementList();
@@ -734,24 +1020,18 @@ QWidget *SettlementManagerPage::buildSettlementForm(int index)
     for (const QJsonValue &perk : perks)
     {
         const QString raw = perk.toString();
-        QString display = ItemDefinitionRegistry::displayNameForId(raw);
-        if (display.isEmpty())
-        {
-            display = raw;
-        }
+        QString display = resolvePerkName(raw);
         auto *item = new QListWidgetItem(display, perksList);
         item->setData(Qt::UserRole, raw);
     }
     perksLayout->addWidget(perksList);
 
     auto *perksRow = new QHBoxLayout();
-    auto *perkField = new QLineEdit(perksGroup);
-    perkField->setPlaceholderText(tr("Add perk id..."));
-    auto *addPerkButton = new QPushButton(tr("Add"), perksGroup);
+    auto *addPerkButton = new QPushButton(tr("Add Perk..."), perksGroup);
     auto *removePerkButton = new QPushButton(tr("Remove Selected"), perksGroup);
-    perksRow->addWidget(perkField);
     perksRow->addWidget(addPerkButton);
     perksRow->addWidget(removePerkButton);
+    perksRow->addStretch();
     perksLayout->addLayout(perksRow);
 
     auto commitPerks = [perksList, updateSettlement, perksKey]()
@@ -772,33 +1052,44 @@ QWidget *SettlementManagerPage::buildSettlementForm(int index)
         });
     };
 
-    connect(addPerkButton, &QPushButton::clicked, perksGroup, [perkField, perksList, commitPerks]()
+    connect(addPerkButton, &QPushButton::clicked, perksGroup, [this, perksList, commitPerks]()
             {
-        const QString value = perkField->text().trimmed();
-        if (value.isEmpty()) {
-            return;
-        }
-        QString display = ItemDefinitionRegistry::displayNameForId(value);
-        if (display.isEmpty())
-        {
-            display = value;
-        }
-        auto *item = new QListWidgetItem(display, perksList);
-        item->setData(Qt::UserRole, value);
-        perkField->clear();
-        commitPerks(); });
+        PerkSelectionDialog dialog(this);
+        if (dialog.exec() == QDialog::Accepted) {
+            QString value = dialog.selectedId();
+            if (value.isEmpty()) return;
+            
+            if (dialog.isProc()) {
+                // Generate a random seed
+                int seed = QRandomGenerator::global()->bounded(1, 99999);
+                value = QString("%1#%2").arg(value).arg(seed);
+            }
 
-    connect(removePerkButton, &QPushButton::clicked, perksGroup, [perksList, commitPerks]()
+            QString display = resolvePerkName(value);
+            auto *item = new QListWidgetItem(display, perksList);
+            item->setData(Qt::UserRole, value);
+            commitPerks();
+        } });
+
+    connect(removePerkButton, &QPushButton::clicked, perksGroup, [this, perksList, commitPerks]()
             {
         QList<QListWidgetItem *> selected = perksList->selectedItems();
+        if (selected.isEmpty()) return;
+
+        QString names;
+        for (auto *s : selected) names += "\n" + s->text();
+        
+        if (QMessageBox::question(this, tr("Confirm Removal"), 
+                                  tr("Are you sure you want to remove the following perks?%1").arg(names),
+                                  QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
+            return;
+        }
+
         for (QListWidgetItem *item : selected)
         {
             delete item;
         }
-        if (!selected.isEmpty())
-        {
-            commitPerks();
-        } });
+        commitPerks(); });
 
     layout->addWidget(perksGroup);
     layout->addStretch();
@@ -1217,17 +1508,73 @@ QJsonValue SettlementManagerPage::setValueAtPath(const QJsonValue &root, const Q
 
 void SettlementManagerPage::applyValueAtPath(const QVariantList &path, const QJsonValue &value)
 {
+    if (!losslessDoc_) {
+        if (valueAtPath(rootDoc_.object(), path) == value) {
+            return;
+        }
+        QJsonValue updated = setValueAtPath(rootDoc_.object(), path, 0, value);
+        if (updated.isObject()) {
+            rootDoc_.setObject(updated.toObject());
+        } else if (updated.isArray()) {
+            rootDoc_.setArray(updated.toArray());
+        }
+        hasUnsavedChanges_ = true;
+        return;
+    }
+
     if (valueAtPath(rootDoc_.object(), path) == value) {
         return;
     }
-    QJsonValue updated = setValueAtPath(rootDoc_.object(), path, 0, value);
-    if (updated.isObject()) {
-        rootDoc_.setObject(updated.toObject());
-    } else if (updated.isArray()) {
-        rootDoc_.setArray(updated.toArray());
+    QVariantList remappedCheck = SaveJsonModel::remapPathToShort(path);
+    if (remappedCheck != path && valueAtPath(rootDoc_.object(), remappedCheck) == value) {
+        return;
     }
-    if (losslessDoc_) {
-        losslessDoc_->setValueAtPath(path, value);
+
+    bool wrote = SaveJsonModel::setLosslessValue(losslessDoc_, path, value);
+    QVariantList remapped;
+    if (!wrote) {
+        remapped = SaveJsonModel::remapPathToShort(path);
     }
+
+    if (!wrote) {
+        if (valueAtPath(rootDoc_.object(), path) != value) {
+            QJsonValue updated = setValueAtPath(rootDoc_.object(), path, 0, value);
+            if (updated.isObject()) {
+                rootDoc_.setObject(updated.toObject());
+            } else if (updated.isArray()) {
+                rootDoc_.setArray(updated.toArray());
+            }
+        }
+        if (remapped.isEmpty()) {
+            remapped = SaveJsonModel::remapPathToShort(path);
+        }
+        QString topKey;
+        if (!path.isEmpty() && path.first().canConvert<QString>()) {
+            topKey = path.first().toString();
+        }
+        QString remappedTop;
+        if (!remapped.isEmpty() && remapped.first().canConvert<QString>()) {
+            remappedTop = remapped.first().toString();
+        }
+        QJsonObject rootObj = rootDoc_.object();
+        QJsonValue topValue = (!topKey.isEmpty()) ? rootObj.value(topKey) : QJsonValue();
+        if (topValue.isUndefined() && !remappedTop.isEmpty() && remappedTop != topKey) {
+            topValue = rootObj.value(remappedTop);
+        }
+        if (!topValue.isUndefined()) {
+            if (!remappedTop.isEmpty()) {
+                losslessDoc_->setValueAtPath({remappedTop}, topValue);
+            } else if (!topKey.isEmpty()) {
+                losslessDoc_->setValueAtPath({topKey}, topValue);
+            }
+        }
+    }
+
+    SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_);
     hasUnsavedChanges_ = true;
+}
+
+bool SettlementManagerPage::syncRootFromLossless(QString *errorMessage)
+{
+    return SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_, errorMessage);
 }

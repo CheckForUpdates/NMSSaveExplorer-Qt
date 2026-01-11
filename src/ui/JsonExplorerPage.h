@@ -40,6 +40,7 @@ private:
     void buildTree();
     void populateChildren(QStandardItem *parent);
     void addPlaceholderIfNeeded(QStandardItem *item, const QJsonValue &value);
+    const rapidjson::Value *losslessValueAtPath(const QVariantList &path) const;
     QJsonValue valueAtPath(const QVariantList &path) const;
     QJsonValue mapToReadable(const QJsonValue &value) const;
     QJsonValue remapToShort(const QJsonValue &value) const;
@@ -57,6 +58,7 @@ private:
     void performFind(const QString &text, bool backward, bool wrap, bool caseSensitive, bool wholeWord, bool useRegex);
 
     void ensureMappingLoaded();
+    bool syncRootFromLossless(QString *errorMessage = nullptr);
 
     QTreeView *tree_ = nullptr;
     QPlainTextEdit *editor_ = nullptr;

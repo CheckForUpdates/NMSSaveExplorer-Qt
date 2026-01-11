@@ -15,6 +15,7 @@ namespace {
 const char *kProductTable = "data/nms_reality_gcproducttable.MXML";
 const char *kSubstanceTable = "data/nms_reality_gcsubstancetable.MXML";
 const char *kTechnologyTable = "data/nms_reality_gctechnologytable.MXML";
+const char *kProceduralTechnologyTable = "data/nms_reality_gcproceduraltechnologytable.MXML";
 const char *kCatalogCache = "item_catalog.json";
 
 const QHash<ItemType, int> kBaseStacks = {
@@ -126,6 +127,7 @@ void ItemCatalog::loadCatalog()
     parseProductTable(entries);
     parseSubstanceTable(entries);
     parseTechnologyTable(entries);
+    parseProceduralTechnologyTable(entries);
 
     QHash<QString, ItemDefinition> definitions = ItemDefinitionRegistry::allDefinitions();
     for (auto it = entries.begin(); it != entries.end(); ++it) {
@@ -259,6 +261,32 @@ void ItemCatalog::parseTechnologyTable(QHash<QString, ItemEntry> &entries)
             child = child.nextSiblingElement("Property");
         }
         ItemEntry entry{ id, QString(), ItemType::Technology, charge };
+        entries.insert(id, entry);
+    }
+}
+
+void ItemCatalog::parseProceduralTechnologyTable(QHash<QString, ItemEntry> &entries)
+{
+    QString path = ResourceLocator::resolveResource(kProceduralTechnologyTable);
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+    QDomDocument doc;
+    if (!doc.setContent(&file)) {
+        return;
+    }
+    QDomNodeList nodes = doc.elementsByTagName("Property");
+    for (int i = 0; i < nodes.count(); ++i) {
+        QDomElement element = nodes.at(i).toElement();
+        if (element.isNull() || element.attribute("value") != "GcProceduralTechnologyData") {
+            continue;
+        }
+        QString id = normalizeId(element.attribute("_id"));
+        if (id.isEmpty()) {
+            continue;
+        }
+        ItemEntry entry{ id, QString(), ItemType::Technology, 100 }; // Default charge for upgrades
         entries.insert(id, entry);
     }
 }

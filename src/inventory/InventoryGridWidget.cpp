@@ -274,18 +274,29 @@ void InventoryGridWidget::rebuild()
 
     auto updateMax = [&](const QJsonObject &idx) {
         if (idx.isEmpty()) return;
-        maxX = qMax(maxX, qRound(idx.value(">Qh").toDouble(0)));
-        maxY = qMax(maxY, qRound(idx.value("XJ>").toDouble(0)));
+        maxX = qMax(maxX, indexValue(idx, ">Qh", "X"));
+        maxY = qMax(maxY, indexValue(idx, "XJ>", "Y"));
     };
 
     for (const QJsonValue &value : validSlots_) {
         if (value.isObject()) updateMax(value.toObject());
     }
     for (const QJsonValue &value : slots_) {
-        if (value.isObject()) updateMax(value.toObject().value("3ZH").toObject());
+        if (!value.isObject()) {
+            continue;
+        }
+        QJsonObject item = value.toObject();
+        QJsonValue idxValue = item.value("3ZH");
+        if (idxValue.isUndefined()) {
+            idxValue = item.value("Index");
+        }
+        updateMax(idxValue.toObject());
     }
     for (const QJsonValue &value : specialSlots_) {
-        if (value.isObject()) updateMax(value.toObject().value("3ZH").toObject());
+        if (!value.isObject()) {
+            continue;
+        }
+        updateMax(specialSlotIndexValue(value.toObject()));
     }
 
     int gridWidth = maxX + 1;
@@ -310,9 +321,13 @@ void InventoryGridWidget::rebuild()
     for (const QJsonValue &value : slots_) {
         if (!value.isObject()) continue;
         QJsonObject item = value.toObject();
-        QJsonObject idx = item.value("3ZH").toObject();
-        int x = qRound(idx.value(">Qh").toDouble(-1));
-        int y = qRound(idx.value("XJ>").toDouble(-1));
+        QJsonValue idxValue = item.value("3ZH");
+        if (idxValue.isUndefined()) {
+            idxValue = item.value("Index");
+        }
+        QJsonObject idx = idxValue.toObject();
+        int x = indexValue(idx, ">Qh", "X");
+        int y = indexValue(idx, "XJ>", "Y");
 
         if (x < 0 || y < 0) continue;
 
@@ -612,25 +627,35 @@ void InventoryGridWidget::addItem(InventoryCell *cell)
     }
 
     QList<ItemType> allowedTypes;
-    for (const QJsonValue &value : slots_) {
-        if (!value.isObject()) {
-            continue;
-        }
-        QJsonObject obj = value.toObject();
-        QJsonObject typeObj = obj.value("Vn8").toObject();
-        ItemType type = itemTypeFromValue(typeObj.value("elv").toString());
-        if (type != ItemType::Unknown && !allowedTypes.contains(type)) {
-            allowedTypes.append(type);
+    QString lower = title_.toLower();
+    
+    if (lower.contains("technology") || lower.contains("tech") || lower.contains("multi") || lower.contains("weapon")) {
+        allowedTypes.append(ItemType::Technology);
+    }
+    
+    if (!lower.contains("technology") && !lower.contains("tech-only") && !lower.contains("multi")) {
+        allowedTypes.append(ItemType::Substance);
+        allowedTypes.append(ItemType::Product);
+    }
+
+    if (allowedTypes.isEmpty()) {
+        for (const QJsonValue &value : slots_) {
+            if (!value.isObject()) {
+                continue;
+            }
+            QJsonObject obj = value.toObject();
+            QJsonObject typeObj = obj.value("Vn8").toObject();
+            ItemType type = itemTypeFromValue(typeObj.value("elv").toString());
+            if (type != ItemType::Unknown && !allowedTypes.contains(type)) {
+                allowedTypes.append(type);
+            }
         }
     }
+
     if (allowedTypes.isEmpty()) {
-        QString lower = title_.toLower();
-        if (lower.contains("tech") || lower.contains("multi")) {
-            allowedTypes.append(ItemType::Technology);
-        } else {
-            allowedTypes.append(ItemType::Substance);
-            allowedTypes.append(ItemType::Product);
-        }
+        allowedTypes.append(ItemType::Substance);
+        allowedTypes.append(ItemType::Product);
+        allowedTypes.append(ItemType::Technology);
     }
 
     QList<ItemEntry> entries = ItemCatalog::itemsForTypes(allowedTypes);
@@ -657,9 +682,9 @@ void InventoryGridWidget::addItem(InventoryCell *cell)
     type.insert("elv", inventoryValueForType(selection.entry.type));
     newItem.insert("Vn8", type);
 
-    newItem.insert("1o9", selection.amount);
-    int suggestedMax = selection.entry.maxStack > 0 ? selection.entry.maxStack : selection.amount;
-    newItem.insert("F9q", qMax(selection.amount, suggestedMax));
+    int maxAmount = selection.entry.maxStack > 0 ? selection.entry.maxStack : selection.amount;
+    newItem.insert("1o9", maxAmount);
+    newItem.insert("F9q", maxAmount);
     newItem.insert("eVk", 0.0);
     newItem.insert("b76", true);
 
@@ -767,6 +792,10 @@ void InventoryGridWidget::repairItem(InventoryCell *cell)
     } else {
         found.insert("eVk", 0.0);
         found.insert("b76", true);
+        int maxAmount = found.value("F9q").toInt(0);
+        if (maxAmount > 0) {
+            found.insert("1o9", maxAmount);
+        }
         slots_.replace(index, found);
     }
     if (commitHandler_) {
@@ -805,6 +834,10 @@ void InventoryGridWidget::repairAllDamaged()
 
         item.insert("eVk", 0.0);
         item.insert("b76", true);
+        int maxAmount = item.value("F9q").toInt(0);
+        if (maxAmount > 0) {
+            item.insert("1o9", maxAmount);
+        }
         ++repairedCount;
         updatedSlots.append(item);
     }
@@ -875,8 +908,12 @@ QJsonObject InventoryGridWidget::findItemAt(int x, int y, int *index) const
 {
     for (int i = 0; i < slots_.size(); ++i) {
         QJsonObject obj = slots_.at(i).toObject();
-        QJsonObject idx = obj.value("3ZH").toObject();
-        if (qRound(idx.value(">Qh").toDouble(-1)) == x && qRound(idx.value("XJ>").toDouble(-1)) == y) {
+        QJsonValue idxValue = obj.value("3ZH");
+        if (idxValue.isUndefined()) {
+            idxValue = obj.value("Index");
+        }
+        QJsonObject idx = idxValue.toObject();
+        if (indexValue(idx, ">Qh", "X") == x && indexValue(idx, "XJ>", "Y") == y) {
             if (index) {
                 *index = i;
             }

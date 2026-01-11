@@ -21,6 +21,7 @@ add_executable(ItemCatalogBuilder
 )
 target_link_libraries(ItemCatalogBuilder PRIVATE ${QT_PACKAGE}::Core ${QT_PACKAGE}::Xml)
 
+
 set(ITEM_CATALOG_OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/item_catalog.json)
 add_custom_command(
   OUTPUT ${ITEM_CATALOG_OUTPUT}

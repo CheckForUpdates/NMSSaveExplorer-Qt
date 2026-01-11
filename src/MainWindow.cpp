@@ -5,6 +5,8 @@
 #include "core/Utf8Diagnostics.h"
 #include "inventory/InventoryEditorPage.h"
 #include "inventory/InventoryGridWidget.h"
+#include "inventory/KnownTechnologyPage.h"
+#include "inventory/KnownProductPage.h"
 #include "registry/ItemCatalog.h"
 #include "settlement/SettlementManagerPage.h"
 #include "ship/ShipManagerPage.h"
@@ -13,6 +15,7 @@
 #include "ui/MaterialLookupDialog.h"
 #include "ui/WelcomePage.h"
 #include "ui/LoadingOverlay.h"
+#include "corvette/CorvetteManagerPage.h"
 #include <QtConcurrent>
 #include <QAction>
 #include <QAbstractItemView>
@@ -26,6 +29,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFileDialog>
+#include <QFrame>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
@@ -33,6 +37,7 @@
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QSplitter>
+#include <QStyledItemDelegate>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTreeWidget>
@@ -49,7 +54,39 @@ const char *kPageExpedition = "expedition";
 const char *kPageStorage = "storage";
 const char *kPageSettlement = "settlement";
 const char *kPageShip = "ship";
+const char *kPageCorvette = "corvette";
 const char *kPageBackups = "backups";
+const char *kPageKnownTechnology = "known-technology";
+const char *kPageKnownProduct = "known-product";
+
+class MenuIndentDelegate : public QStyledItemDelegate
+{
+public:
+    explicit MenuIndentDelegate(int leftPadding, QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+        , leftPadding_(leftPadding)
+    {
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyleOptionViewItem opt(option);
+        opt.rect.adjust(leftPadding_, 0, 0, 0);
+        QStyledItemDelegate::paint(painter, opt, index);
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QSize size = QStyledItemDelegate::sizeHint(option, index);
+        size.rwidth() += leftPadding_;
+        return size;
+    }
+
+private:
+    int leftPadding_ = 0;
+};
 
 }
 
@@ -64,26 +101,47 @@ void MainWindow::buildUi()
 {
     mainSplitter_ = new QSplitter(this);
     setCentralWidget(mainSplitter_);
+    mainSplitter_->setChildrenCollapsible(false);
+    mainSplitter_->setHandleWidth(0);
 
     sectionTree_ = new QTreeWidget(mainSplitter_);
     sectionTree_->setHeaderHidden(true);
     sectionTree_->setMinimumWidth(220);
+    sectionTree_->setMaximumWidth(220);
+    sectionTree_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    sectionTree_->setIndentation(0);
+    sectionTree_->setRootIsDecorated(false);
+    sectionTree_->setItemDelegate(new MenuIndentDelegate(12, sectionTree_));
+    {
+        QFont menuFont = sectionTree_->font();
+        menuFont.setPointSize(menuFont.pointSize() + 2);
+        sectionTree_->setFont(menuFont);
+        sectionTree_->setStyleSheet(QStringLiteral(
+            "QTreeWidget { padding-top: 12px; }"
+            "QTreeWidget::item { padding: 6px 4px; }"
+            "QTreeWidget::branch { padding: 0px; }"));
+    }
 
     auto *homeItem = new QTreeWidgetItem(QStringList() << tr("Home"));
     homeItem->setData(0, Qt::UserRole, kPageHome);
     sectionTree_->addTopLevelItem(homeItem);
 
-    auto *backupsItem = new QTreeWidgetItem(QStringList() << tr("Backups"));
-    backupsItem->setData(0, Qt::UserRole, kPageBackups);
-    sectionTree_->addTopLevelItem(backupsItem);
+    auto *homeSeparator = new QTreeWidgetItem(QStringList() << QString());
+    homeSeparator->setFlags(Qt::NoItemFlags);
+    sectionTree_->addTopLevelItem(homeSeparator);
+    {
+        auto *separatorLine = new QFrame(sectionTree_);
+        separatorLine->setFrameShape(QFrame::HLine);
+        separatorLine->setFrameShadow(QFrame::Sunken);
+        separatorLine->setStyleSheet(QStringLiteral("color: #3a3a3a;"));
+        separatorLine->setMinimumHeight(1);
+        sectionTree_->setItemWidget(homeSeparator, 0, separatorLine);
+        homeSeparator->setSizeHint(0, QSize(0, 8));
+    }
 
-    auto *jsonItem = new QTreeWidgetItem(QStringList() << tr("JSON Explorer"));
-    jsonItem->setData(0, Qt::UserRole, kPageJson);
-    sectionTree_->addTopLevelItem(jsonItem);
-
-    auto *inventoryItem = new QTreeWidgetItem(QStringList() << tr("Inventories"));
-    inventoryItem->setData(0, Qt::UserRole, kPageInventory);
-    sectionTree_->addTopLevelItem(inventoryItem);
+    auto *corvetteItem = new QTreeWidgetItem(QStringList() << tr("Corvette Manager"));
+    corvetteItem->setData(0, Qt::UserRole, kPageCorvette);
+    sectionTree_->addTopLevelItem(corvetteItem);
 
     auto *currenciesItem = new QTreeWidgetItem(QStringList() << tr("Currencies"));
     currenciesItem->setData(0, Qt::UserRole, kPageCurrencies);
@@ -93,9 +151,21 @@ void MainWindow::buildUi()
     expeditionItem->setData(0, Qt::UserRole, kPageExpedition);
     sectionTree_->addTopLevelItem(expeditionItem);
 
-    auto *storageItem = new QTreeWidgetItem(QStringList() << tr("Storage Manager"));
-    storageItem->setData(0, Qt::UserRole, kPageStorage);
-    sectionTree_->addTopLevelItem(storageItem);
+    auto *inventoryItem = new QTreeWidgetItem(QStringList() << tr("Inventories"));
+    inventoryItem->setData(0, Qt::UserRole, kPageInventory);
+    sectionTree_->addTopLevelItem(inventoryItem);
+
+    auto *jsonItem = new QTreeWidgetItem(QStringList() << tr("JSON Explorer"));
+    jsonItem->setData(0, Qt::UserRole, kPageJson);
+    sectionTree_->addTopLevelItem(jsonItem);
+
+    auto *knownTechItem = new QTreeWidgetItem(QStringList() << tr("Known Technology"));
+    knownTechItem->setData(0, Qt::UserRole, kPageKnownTechnology);
+    sectionTree_->addTopLevelItem(knownTechItem);
+
+    auto *knownProductItem = new QTreeWidgetItem(QStringList() << tr("Known Products"));
+    knownProductItem->setData(0, Qt::UserRole, kPageKnownProduct);
+    sectionTree_->addTopLevelItem(knownProductItem);
 
     auto *settlementItem = new QTreeWidgetItem(QStringList() << tr("Settlement Manager"));
     settlementItem->setData(0, Qt::UserRole, kPageSettlement);
@@ -104,6 +174,10 @@ void MainWindow::buildUi()
     auto *shipItem = new QTreeWidgetItem(QStringList() << tr("Ship Manager"));
     shipItem->setData(0, Qt::UserRole, kPageShip);
     sectionTree_->addTopLevelItem(shipItem);
+
+    auto *storageItem = new QTreeWidgetItem(QStringList() << tr("Storage Manager"));
+    storageItem->setData(0, Qt::UserRole, kPageStorage);
+    sectionTree_->addTopLevelItem(storageItem);
 
     stackedPages_ = new QStackedWidget(mainSplitter_);
 
@@ -117,7 +191,10 @@ void MainWindow::buildUi()
     storageManagerPage_ = new InventoryEditorPage(this, InventoryEditorPage::InventorySection::StorageManager);
     settlementPage_ = new SettlementManagerPage(this);
     shipManagerPage_ = new ShipManagerPage(this);
+    corvetteManagerPage_ = new CorvetteManagerPage(this);
     backupsPage_ = new BackupsPage(this);
+    knownTechnologyPage_ = new KnownTechnologyPage(this);
+    knownProductPage_ = new KnownProductPage(this);
     backupsPage_->setBackupRoot(backupManager_.rootPath());
 
     stackedPages_->addWidget(welcomePage_);
@@ -125,10 +202,13 @@ void MainWindow::buildUi()
     stackedPages_->addWidget(inventoryPage_);
     stackedPages_->addWidget(settlementPage_);
     stackedPages_->addWidget(shipManagerPage_);
+    stackedPages_->addWidget(corvetteManagerPage_);
     stackedPages_->addWidget(currenciesPage_);
     stackedPages_->addWidget(expeditionPage_);
     stackedPages_->addWidget(storageManagerPage_);
     stackedPages_->addWidget(backupsPage_);
+    stackedPages_->addWidget(knownTechnologyPage_);
+    stackedPages_->addWidget(knownProductPage_);
 
     loadingOverlay_ = new LoadingOverlay(this);
 
@@ -140,6 +220,7 @@ void MainWindow::buildUi()
     const int gridHeight = InventoryGridWidget::preferredGridHeight(6);
     const int treeWidth = sectionTree_->minimumWidth();
     resize(treeWidth + gridWidth + 60, gridHeight + 200);
+    mainSplitter_->setSizes({treeWidth, gridWidth + 60});
 
     buildMenus();
 
@@ -150,7 +231,7 @@ void MainWindow::buildUi()
     connect(saveWatcher_, &QFileSystemWatcher::fileChanged, this, &MainWindow::handleSaveFileChanged);
 
     connect(sectionTree_, &QTreeWidget::currentItemChanged, this,
-            [this](QTreeWidgetItem *current, QTreeWidgetItem *) {
+            [this](QTreeWidgetItem *current, QTreeWidgetItem *previous) {
                 if (!current) {
                     return;
                 }
@@ -158,22 +239,13 @@ void MainWindow::buildUi()
                 if (stackedPages_->currentWidget() == jsonPage_ && key != kPageJson) {
                     if (!confirmLeaveJsonEditor(current->text(0))) {
                         QSignalBlocker blocker(sectionTree_);
-                        for (int i = 0; i < sectionTree_->topLevelItemCount(); ++i) {
-                            QTreeWidgetItem *item = sectionTree_->topLevelItem(i);
-                            if (item && item->data(0, Qt::UserRole).toString() == kPageJson) {
-                                sectionTree_->setCurrentItem(item);
-                                break;
-                            }
-                        }
+                        sectionTree_->setCurrentItem(previous);
                         return;
                     }
                 }
-                if (key == kPageSettlement) {
-                    openSettlementManager();
-                    return;
-                }
-                if (key == kPageShip) {
-                    openShipManager();
+
+                if (key == kPageHome || key.isEmpty()) {
+                    selectPage(kPageHome);
                     return;
                 }
                 if (key == kPageBackups) {
@@ -181,32 +253,42 @@ void MainWindow::buildUi()
                     refreshBackupsPage();
                     return;
                 }
-            if (key == kPageJson) {
-                if (currentSaveFile_.isEmpty()) {
-                    selectPage(kPageJson);
-                    setStatus(tr("Load a save slot first."));
+
+                if (!ensureSaveLoaded()) {
+                    QSignalBlocker blocker(sectionTree_);
+                    for (int i = 0; i < sectionTree_->topLevelItemCount(); ++i) {
+                        QTreeWidgetItem *item = sectionTree_->topLevelItem(i);
+                        if (item && item->data(0, Qt::UserRole).toString() == kPageHome) {
+                            sectionTree_->setCurrentItem(item);
+                            break;
+                        }
+                    }
                     return;
                 }
-                openJsonEditor();
-                return;
-            }
-            if (key == kPageInventory) {
-                openInventoryEditor();
-                return;
-            }
-                if (key == kPageCurrencies) {
+
+                if (key == kPageSettlement) {
+                    openSettlementManager();
+                } else if (key == kPageShip) {
+                    openShipManager();
+                } else if (key == kPageCorvette) {
+                    openCorvetteManager();
+                } else if (key == kPageJson) {
+                    openJsonEditor();
+                } else if (key == kPageInventory) {
+                    openInventoryEditor();
+                } else if (key == kPageCurrencies) {
                     openCurrenciesEditor();
-                    return;
-                }
-                if (key == kPageExpedition) {
+                } else if (key == kPageExpedition) {
                     openExpeditionEditor();
-                    return;
-                }
-                if (key == kPageStorage) {
+                } else if (key == kPageStorage) {
                     openStorageManager();
-                    return;
+                } else if (key == kPageKnownTechnology) {
+                    openKnownTechnologyEditor();
+                } else if (key == kPageKnownProduct) {
+                    openKnownProductEditor();
+                } else {
+                    selectPage(key);
                 }
-                selectPage(key);
             });
 
     connect(welcomePage_, &WelcomePage::refreshRequested, this, &MainWindow::refreshSaveSlots);
@@ -260,6 +342,9 @@ void MainWindow::buildUi()
     connect(storageManagerPage_, &InventoryEditorPage::statusMessage, this, &MainWindow::setStatus);
     connect(settlementPage_, &SettlementManagerPage::statusMessage, this, &MainWindow::setStatus);
     connect(shipManagerPage_, &ShipManagerPage::statusMessage, this, &MainWindow::setStatus);
+    connect(corvetteManagerPage_, &CorvetteManagerPage::statusMessage, this, &MainWindow::setStatus);
+    connect(knownTechnologyPage_, &KnownTechnologyPage::statusMessage, this, &MainWindow::setStatus);
+    connect(knownProductPage_, &KnownProductPage::statusMessage, this, &MainWindow::setStatus);
 
     refreshSaveSlots();
     sectionTree_->setCurrentItem(homeItem);
@@ -275,9 +360,10 @@ void MainWindow::buildMenus()
 {
     auto *fileMenu = menuBar()->addMenu(tr("File"));
     QAction *openAction = fileMenu->addAction(tr("Open Save..."));
-    QAction *saveAction = fileMenu->addAction(tr("Save Changes"));
+    saveAction_ = fileMenu->addAction(tr("Save Changes"));
     QAction *saveAsAction = fileMenu->addAction(tr("Save As..."));
     QAction *exportAction = fileMenu->addAction(tr("Export JSON..."));
+    QAction *backupsAction = fileMenu->addAction(tr("Backups"));
     fileMenu->addSeparator();
     QAction *exitAction = fileMenu->addAction(tr("Exit"));
 
@@ -285,17 +371,14 @@ void MainWindow::buildMenus()
     QAction *expandAction = viewMenu->addAction(tr("Expand All"));
     QAction *collapseAction = viewMenu->addAction(tr("Collapse All"));
 
-    menuBar()->addAction(saveAction);
-
     auto *helpMenu = menuBar()->addMenu(tr("Help"));
     QAction *logAction = helpMenu->addAction(tr("Open Log Folder"));
     QAction *aboutAction = helpMenu->addAction(tr("About"));
 
-    connect(openAction, &QAction::triggered, this, &MainWindow::openJsonEditor);
-    connect(saveAction, &QAction::triggered, this, &MainWindow::saveChanges);
+    connect(openAction, &QAction::triggered, this, &MainWindow::browseForSaveDirectory);
+    connect(saveAction_, &QAction::triggered, this, &MainWindow::saveChanges);
     connect(saveAsAction, &QAction::triggered, this, [this]() {
-        if (!jsonPage_->hasLoadedSave()) {
-            setStatus(tr("No save loaded."));
+        if (!ensureSaveLoaded()) {
             return;
         }
         QString filePath = QFileDialog::getSaveFileName(this, tr("Save As .hg"), QString(), tr("No Man's Sky Saves (*.hg)"));
@@ -310,8 +393,7 @@ void MainWindow::buildMenus()
         }
     });
     connect(exportAction, &QAction::triggered, this, [this]() {
-        if (!jsonPage_->hasLoadedSave()) {
-            setStatus(tr("No save loaded."));
+        if (!ensureSaveLoaded()) {
             return;
         }
         QString filePath = QFileDialog::getSaveFileName(this, tr("Export JSON"), QString(), tr("JSON Files (*.json)"));
@@ -324,6 +406,10 @@ void MainWindow::buildMenus()
         } else {
             setStatus(tr("Exported JSON to %1").arg(QFileInfo(filePath).fileName()));
         }
+    });
+    connect(backupsAction, &QAction::triggered, this, [this]() {
+        selectPage(kPageBackups);
+        refreshBackupsPage();
     });
     connect(exitAction, &QAction::triggered, this, &QWidget::close);
 
@@ -369,6 +455,27 @@ void MainWindow::browseForSave()
     saveSlots_.prepend(slot);
     welcomePage_->setSlots(saveSlots_);
     setStatus(tr("Selected %1").arg(QFileInfo(path).fileName()));
+}
+
+void MainWindow::browseForSaveDirectory()
+{
+    QString path = QFileDialog::getExistingDirectory(this, tr("Select No Man's Sky Save Directory"), QString());
+    if (path.isEmpty()) {
+        return;
+    }
+
+    QList<SaveSlot> newSlots = SaveGameLocator::scanDirectory(path);
+    if (newSlots.isEmpty()) {
+        // If no slots found in subdirectories, try scanning the directory itself as a slot
+        // or just warn the user.
+        QMessageBox::information(this, tr("No Saves Found"), tr("No save files were found in the selected directory."));
+        return;
+    }
+
+    saveSlots_ = newSlots;
+    welcomePage_->setSlots(saveSlots_);
+    selectPage(kPageHome);
+    setStatus(tr("Loaded %1 save slot(s) from directory.").arg(saveSlots_.size()));
 }
 
 void MainWindow::loadSelectedSave()
@@ -465,9 +572,7 @@ const SaveSlot *MainWindow::findSlotForPath(const QString &path) const
 
 void MainWindow::openJsonEditor()
 {
-    if (currentSaveFile_.isEmpty()) {
-        setStatus(tr("Load a save slot first."));
-        selectPage(kPageJson);
+    if (!ensureSaveLoaded()) {
         return;
     }
 
@@ -530,8 +635,7 @@ void MainWindow::openInventoryEditor()
     if (!confirmLeaveJsonEditor(tr("Inventories"))) {
         return;
     }
-    if (currentSaveFile_.isEmpty()) {
-        setStatus(tr("Load a save slot first."));
+    if (!ensureSaveLoaded()) {
         return;
     }
     if (inventoryPage_->hasLoadedSave() && inventoryPage_->currentFilePath() == currentSaveFile_) {
@@ -564,8 +668,7 @@ void MainWindow::openCurrenciesEditor()
     if (!confirmLeaveJsonEditor(tr("Currencies"))) {
         return;
     }
-    if (currentSaveFile_.isEmpty()) {
-        setStatus(tr("Load a save slot first."));
+    if (!ensureSaveLoaded()) {
         return;
     }
     if (currenciesPage_->hasLoadedSave() && currenciesPage_->currentFilePath() == currentSaveFile_) {
@@ -598,8 +701,7 @@ void MainWindow::openExpeditionEditor()
     if (!confirmLeaveJsonEditor(tr("Expedition"))) {
         return;
     }
-    if (currentSaveFile_.isEmpty()) {
-        setStatus(tr("Load a save slot first."));
+    if (!ensureSaveLoaded()) {
         return;
     }
     if (expeditionPage_->hasLoadedSave() && expeditionPage_->currentFilePath() == currentSaveFile_) {
@@ -632,8 +734,7 @@ void MainWindow::openStorageManager()
     if (!confirmLeaveJsonEditor(tr("Storage Manager"))) {
         return;
     }
-    if (currentSaveFile_.isEmpty()) {
-        setStatus(tr("Load a save slot first."));
+    if (!ensureSaveLoaded()) {
         return;
     }
     if (storageManagerPage_->hasLoadedSave()
@@ -667,8 +768,7 @@ void MainWindow::openSettlementManager()
     if (!confirmLeaveJsonEditor(tr("Settlement Manager"))) {
         return;
     }
-    if (currentSaveFile_.isEmpty()) {
-        setStatus(tr("Load a save slot first."));
+    if (!ensureSaveLoaded()) {
         return;
     }
     QString path = currentSaveFile_;
@@ -711,8 +811,7 @@ void MainWindow::openShipManager()
     if (!confirmLeaveJsonEditor(tr("Ship Manager"))) {
         return;
     }
-    if (currentSaveFile_.isEmpty()) {
-        setStatus(tr("Load a save slot first."));
+    if (!ensureSaveLoaded()) {
         return;
     }
     QString path = currentSaveFile_;
@@ -742,10 +841,115 @@ void MainWindow::openShipManager()
     selectPage(kPageShip);
 }
 
+void MainWindow::openCorvetteManager()
+{
+    if (!confirmLeaveJsonEditor(tr("Corvette Manager"))) {
+        return;
+    }
+    if (!ensureSaveLoaded()) {
+        return;
+    }
+    QString path = currentSaveFile_;
+
+    if (corvetteManagerPage_->hasLoadedSave()
+        && corvetteManagerPage_->currentFilePath() == currentSaveFile_) {
+        selectPage(kPageCorvette);
+        return;
+    }
+    if (corvetteManagerPage_->hasLoadedSave() && corvetteManagerPage_->hasUnsavedChanges()) {
+        if (!confirmDiscardOrSave(tr("Corvette Manager"), [this](QString *error) {
+                return corvetteManagerPage_->saveChanges(error);
+            })) {
+            return;
+        }
+    }
+
+    QString error;
+    if (!corvetteManagerPage_->loadFromFile(path, &error)) {
+        setStatus(error);
+        return;
+    }
+    currentSaveFile_ = path;
+    updateSaveWatcher(currentSaveFile_);
+    welcomePage_->setSaveEnabled(corvetteManagerPage_->hasUnsavedChanges());
+    welcomePage_->setLoadedSavePath(currentSaveFile_);
+    selectPage(kPageCorvette);
+}
+
 void MainWindow::openMaterialLookup()
 {
     MaterialLookupDialog dialog(this);
     dialog.exec();
+}
+
+void MainWindow::openKnownTechnologyEditor()
+{
+    if (!confirmLeaveJsonEditor(tr("Known Technology"))) {
+        return;
+    }
+    if (!ensureSaveLoaded()) {
+        return;
+    }
+    QString path = currentSaveFile_;
+
+    if (knownTechnologyPage_->hasLoadedSave()
+        && knownTechnologyPage_->currentFilePath() == path) {
+        selectPage(kPageKnownTechnology);
+        return;
+    }
+    if (knownTechnologyPage_->hasLoadedSave() && knownTechnologyPage_->hasUnsavedChanges()) {
+        if (!confirmDiscardOrSave(tr("Known Technology"), [this](QString *error) {
+                return knownTechnologyPage_->saveChanges(error);
+            })) {
+            return;
+        }
+    }
+
+    QString error;
+    if (!knownTechnologyPage_->loadFromFile(path, &error)) {
+        setStatus(error);
+        return;
+    }
+    currentSaveFile_ = path;
+    updateSaveWatcher(currentSaveFile_);
+    welcomePage_->setSaveEnabled(knownTechnologyPage_->hasUnsavedChanges());
+    welcomePage_->setLoadedSavePath(currentSaveFile_);
+    selectPage(kPageKnownTechnology);
+}
+
+void MainWindow::openKnownProductEditor()
+{
+    if (!confirmLeaveJsonEditor(tr("Known Products"))) {
+        return;
+    }
+    if (!ensureSaveLoaded()) {
+        return;
+    }
+    QString path = currentSaveFile_;
+
+    if (knownProductPage_->hasLoadedSave()
+        && knownProductPage_->currentFilePath() == path) {
+        selectPage(kPageKnownProduct);
+        return;
+    }
+    if (knownProductPage_->hasLoadedSave() && knownProductPage_->hasUnsavedChanges()) {
+        if (!confirmDiscardOrSave(tr("Known Products"), [this](QString *error) {
+                return knownProductPage_->saveChanges(error);
+            })) {
+            return;
+        }
+    }
+
+    QString error;
+    if (!knownProductPage_->loadFromFile(path, &error)) {
+        setStatus(error);
+        return;
+    }
+    currentSaveFile_ = path;
+    updateSaveWatcher(currentSaveFile_);
+    welcomePage_->setSaveEnabled(knownProductPage_->hasUnsavedChanges());
+    welcomePage_->setLoadedSavePath(currentSaveFile_);
+    selectPage(kPageKnownProduct);
 }
 
 void MainWindow::saveChanges()
@@ -773,6 +977,10 @@ void MainWindow::saveChanges()
         return;
     }
 
+    if (!ensureSaveLoaded()) {
+        return;
+    }
+
     QWidget *activePage = stackedPages_->currentWidget();
     QString error;
     bool saved = false;
@@ -785,12 +993,18 @@ void MainWindow::saveChanges()
         saved = settlementPage_->saveChanges(&error);
     } else if (activePage == shipManagerPage_ && shipManagerPage_->hasLoadedSave()) {
         saved = shipManagerPage_->saveChanges(&error);
+    } else if (activePage == corvetteManagerPage_ && corvetteManagerPage_->hasLoadedSave()) {
+        saved = corvetteManagerPage_->saveChanges(&error);
     } else if (activePage == currenciesPage_ && currenciesPage_->hasLoadedSave()) {
         saved = currenciesPage_->saveChanges(&error);
     } else if (activePage == expeditionPage_ && expeditionPage_->hasLoadedSave()) {
         saved = expeditionPage_->saveChanges(&error);
     } else if (activePage == storageManagerPage_ && storageManagerPage_->hasLoadedSave()) {
         saved = storageManagerPage_->saveChanges(&error);
+    } else if (activePage == knownTechnologyPage_ && knownTechnologyPage_->hasLoadedSave()) {
+        saved = knownTechnologyPage_->saveChanges(&error);
+    } else if (activePage == knownProductPage_ && knownProductPage_->hasLoadedSave()) {
+        saved = knownProductPage_->saveChanges(&error);
     } else if (jsonPage_->hasLoadedSave()) {
         saved = jsonPage_->saveChanges(&error);
     } else if (inventoryPage_->hasLoadedSave()) {
@@ -801,6 +1015,10 @@ void MainWindow::saveChanges()
         saved = expeditionPage_->saveChanges(&error);
     } else if (storageManagerPage_->hasLoadedSave()) {
         saved = storageManagerPage_->saveChanges(&error);
+    } else if (knownTechnologyPage_->hasLoadedSave()) {
+        saved = knownTechnologyPage_->saveChanges(&error);
+    } else if (knownProductPage_->hasLoadedSave()) {
+        saved = knownProductPage_->saveChanges(&error);
     } else if (settlementPage_->hasLoadedSave()) {
         saved = settlementPage_->saveChanges(&error);
     } else if (shipManagerPage_->hasLoadedSave()) {
@@ -968,6 +1186,16 @@ void MainWindow::setStatus(const QString &text)
     statusLabel_->setText(text);
 }
 
+bool MainWindow::ensureSaveLoaded()
+{
+    if (currentSaveFile_.isEmpty()) {
+        QMessageBox::information(this, tr("No Save Loaded"),
+                                 tr("Please load a save file first."));
+        return false;
+    }
+    return true;
+}
+
 void MainWindow::selectPage(const QString &key)
 {
     if (key == kPageHome) {
@@ -982,13 +1210,19 @@ void MainWindow::selectPage(const QString &key)
     } else if (key == kPageShip) {
         stackedPages_->setCurrentIndex(4);
     } else if (key == kPageCurrencies) {
-        stackedPages_->setCurrentIndex(5);
-    } else if (key == kPageExpedition) {
         stackedPages_->setCurrentIndex(6);
-    } else if (key == kPageStorage) {
+    } else if (key == kPageExpedition) {
         stackedPages_->setCurrentIndex(7);
-    } else if (key == kPageBackups) {
+    } else if (key == kPageStorage) {
         stackedPages_->setCurrentIndex(8);
+    } else if (key == kPageBackups) {
+        stackedPages_->setCurrentIndex(9);
+    } else if (key == kPageCorvette) {
+        stackedPages_->setCurrentIndex(5);
+    } else if (key == kPageKnownTechnology) {
+        stackedPages_->setCurrentIndex(10);
+    } else if (key == kPageKnownProduct) {
+        stackedPages_->setCurrentIndex(11);
     }
 }
 
@@ -999,16 +1233,22 @@ bool MainWindow::hasPendingChanges() const
         || (currenciesPage_ && currenciesPage_->hasLoadedSave() && currenciesPage_->hasUnsavedChanges())
         || (expeditionPage_ && expeditionPage_->hasLoadedSave() && expeditionPage_->hasUnsavedChanges())
         || (storageManagerPage_ && storageManagerPage_->hasLoadedSave() && storageManagerPage_->hasUnsavedChanges())
+        || (knownTechnologyPage_ && knownTechnologyPage_->hasLoadedSave() && knownTechnologyPage_->hasUnsavedChanges())
+        || (knownProductPage_ && knownProductPage_->hasLoadedSave() && knownProductPage_->hasUnsavedChanges())
         || (settlementPage_ && settlementPage_->hasLoadedSave() && settlementPage_->hasUnsavedChanges())
-        || (shipManagerPage_ && shipManagerPage_->hasLoadedSave() && shipManagerPage_->hasUnsavedChanges());
+        || (shipManagerPage_ && shipManagerPage_->hasLoadedSave() && shipManagerPage_->hasUnsavedChanges())
+        || (corvetteManagerPage_ && corvetteManagerPage_->hasLoadedSave() && corvetteManagerPage_->hasUnsavedChanges());
 }
 
 void MainWindow::updateHomeSaveEnabled()
 {
-    if (!welcomePage_) {
-        return;
+    bool pending = hasPendingChanges();
+    if (welcomePage_) {
+        welcomePage_->setSaveEnabled(pending);
     }
-    welcomePage_->setSaveEnabled(hasPendingChanges());
+    if (saveAction_) {
+        saveAction_->setEnabled(pending || syncPending_);
+    }
 }
 
 
@@ -1095,6 +1335,16 @@ void MainWindow::closeEvent(QCloseEvent *event)
             return storageManagerPage_->saveChanges(error);
         }});
     }
+    if (knownTechnologyPage_->hasLoadedSave() && knownTechnologyPage_->hasUnsavedChanges()) {
+        pending.append({tr("Known Technology"), [this](QString *error) {
+            return knownTechnologyPage_->saveChanges(error);
+        }});
+    }
+    if (knownProductPage_->hasLoadedSave() && knownProductPage_->hasUnsavedChanges()) {
+        pending.append({tr("Known Products"), [this](QString *error) {
+            return knownProductPage_->saveChanges(error);
+        }});
+    }
     if (settlementPage_->hasLoadedSave() && settlementPage_->hasUnsavedChanges()) {
         pending.append({tr("Settlement Manager"), [this](QString *error) {
             return settlementPage_->saveChanges(error);
@@ -1103,6 +1353,11 @@ void MainWindow::closeEvent(QCloseEvent *event)
     if (shipManagerPage_->hasLoadedSave() && shipManagerPage_->hasUnsavedChanges()) {
         pending.append({tr("Ship Manager"), [this](QString *error) {
             return shipManagerPage_->saveChanges(error);
+        }});
+    }
+    if (corvetteManagerPage_->hasLoadedSave() && corvetteManagerPage_->hasUnsavedChanges()) {
+        pending.append({tr("Corvette Manager"), [this](QString *error) {
+            return corvetteManagerPage_->saveChanges(error);
         }});
     }
 

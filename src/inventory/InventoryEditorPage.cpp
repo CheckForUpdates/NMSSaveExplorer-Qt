@@ -8,6 +8,7 @@
 #include "registry/IconRegistry.h"
 #include "registry/ItemDefinitionRegistry.h"
 #include "registry/LocalizationRegistry.h"
+#include "core/SaveJsonModel.h"
 
 #include <cmath>
 #include <QFile>
@@ -38,6 +39,7 @@ namespace
 {
     const char *kKeyActiveContext = "XTp";
     const char *kKeyExpeditionContext = "2YS";
+
 
 static bool isExplicitlyEmptySeed(const QJsonValue &v)
 {
@@ -76,17 +78,14 @@ static QJsonObject multitoolDataObject(const QJsonObject &item)
 }
 
 static QVariantList findMultitoolPath(const QJsonObject &root, const QVariantList &base) {
-    // Try SuJ directly under base (Common for modern saves)
     QVariantList p1 = base; p1 << "SuJ";
     QJsonValue v1 = InventoryEditorPage::valueAtPath(root, p1);
     if (v1.isArray() && !v1.toArray().isEmpty()) return p1;
 
-    // Try 97S -> SuJ (Alternative structure)
     QVariantList p2 = base; p2 << "97S" << "SuJ";
     QJsonValue v2 = InventoryEditorPage::valueAtPath(root, p2);
     if (v2.isArray() && !v2.toArray().isEmpty()) return p2;
 
-    // Default to Kgt (Active weapon only)
     QVariantList p3 = base; p3 << "Kgt";
     return p3;
 }
@@ -192,6 +191,9 @@ bool InventoryEditorPage::loadFromFile(const QString &filePath, QString *errorMe
     losslessDoc_ = lossless;
     currentFilePath_ = filePath;
     hasUnsavedChanges_ = false;
+    if (!syncRootFromLossless(errorMessage)) {
+        return false;
+    }
     updateActiveContext();
 
     QJsonObject player = valueAtPath(rootDoc_.object(), playerBasePath()).toObject();
@@ -957,23 +959,75 @@ QJsonValue InventoryEditorPage::setValueAtPath(const QJsonValue &root, const QVa
 
 void InventoryEditorPage::applyValueAtPath(const QVariantList &path, const QJsonValue &value)
 {
+    if (!losslessDoc_) {
+        QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
+                                                   : QJsonValue(rootDoc_.array());
+        if (valueAtPath(rootValue, path) == value) {
+            return;
+        }
+        QJsonValue updated = setValueAtPath(rootValue, path, 0, value);
+        if (updated.isObject()) {
+            rootDoc_.setObject(updated.toObject());
+        } else if (updated.isArray()) {
+            rootDoc_.setArray(updated.toArray());
+        }
+        hasUnsavedChanges_ = true;
+        return;
+    }
+
     QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
                                                : QJsonValue(rootDoc_.array());
     if (valueAtPath(rootValue, path) == value) {
-        if (losslessDoc_) {
-            losslessDoc_->setValueAtPath(path, value);
-        }
         return;
     }
-    QJsonValue updated = setValueAtPath(rootValue, path, 0, value);
-    if (updated.isObject()) {
-        rootDoc_.setObject(updated.toObject());
-    } else if (updated.isArray()) {
-        rootDoc_.setArray(updated.toArray());
+    QVariantList remappedCheck = SaveJsonModel::remapPathToShort(path);
+    if (remappedCheck != path && valueAtPath(rootValue, remappedCheck) == value) {
+        return;
     }
-    if (losslessDoc_) {
-        losslessDoc_->setValueAtPath(path, value);
+
+    bool wrote = SaveJsonModel::setLosslessValue(losslessDoc_, path, value);
+    QVariantList remapped;
+    if (!wrote) {
+        remapped = SaveJsonModel::remapPathToShort(path);
     }
+
+    if (!wrote) {
+        QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
+                                                   : QJsonValue(rootDoc_.array());
+        if (valueAtPath(rootValue, path) != value) {
+            QJsonValue updated = setValueAtPath(rootValue, path, 0, value);
+            if (updated.isObject()) {
+                rootDoc_.setObject(updated.toObject());
+            } else if (updated.isArray()) {
+                rootDoc_.setArray(updated.toArray());
+            }
+        }
+        if (remapped.isEmpty()) {
+            remapped = SaveJsonModel::remapPathToShort(path);
+        }
+        QString topKey;
+        if (!path.isEmpty() && path.first().canConvert<QString>()) {
+            topKey = path.first().toString();
+        }
+        QString remappedTop;
+        if (!remapped.isEmpty() && remapped.first().canConvert<QString>()) {
+            remappedTop = remapped.first().toString();
+        }
+        QJsonObject rootObj = rootDoc_.object();
+        QJsonValue topValue = (!topKey.isEmpty()) ? rootObj.value(topKey) : QJsonValue();
+        if (topValue.isUndefined() && !remappedTop.isEmpty() && remappedTop != topKey) {
+            topValue = rootObj.value(remappedTop);
+        }
+        if (!topValue.isUndefined()) {
+            if (!remappedTop.isEmpty()) {
+                losslessDoc_->setValueAtPath({remappedTop}, topValue);
+            } else if (!topKey.isEmpty()) {
+                losslessDoc_->setValueAtPath({topKey}, topValue);
+            }
+        }
+    }
+
+    SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_);
     hasUnsavedChanges_ = true;
 }
 
@@ -1011,6 +1065,11 @@ QJsonObject InventoryEditorPage::activePlayerState() const
 {
     QVariantList basePath = playerBasePath();
     return valueAtPath(rootDoc_.object(), basePath).toObject();
+}
+
+bool InventoryEditorPage::syncRootFromLossless(QString *errorMessage)
+{
+    return SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_, errorMessage);
 }
 
 QJsonArray InventoryEditorPage::ensureMilestoneArray(QJsonObject &seasonState,
@@ -1145,7 +1204,7 @@ void InventoryEditorPage::addExpeditionTab()
     QJsonArray milestoneValues = ensureMilestoneArray(seasonState, totalMilestones);
     commonState.insert(kKeySeasonState, seasonState);
     root.insert(kKeyCommonState, commonState);
-    rootDoc_.setObject(root);
+    applyValueAtPath({kKeyCommonState}, commonState);
     applyValueAtPath({kKeyCommonState, kKeySeasonState, kKeyMilestoneValues}, milestoneValues);
 
     auto *content = new QWidget(this);
@@ -1156,6 +1215,25 @@ void InventoryEditorPage::addExpeditionTab()
     int milestoneOffset = 0;
     int stageCount = qMin(5, stages.size());
     QVariantList milestonePath = {kKeyCommonState, kKeySeasonState, kKeyMilestoneValues};
+
+    auto *headerRow = new QHBoxLayout();
+    auto *revealAllButton = new QPushButton(tr("Reveal All Milestones"), content);
+    revealAllButton->setFixedWidth(200);
+    headerRow->addWidget(revealAllButton);
+    headerRow->addStretch();
+    layout->addLayout(headerRow);
+
+    connect(revealAllButton, &QPushButton::clicked, this, [this, stages]() {
+        for (int i = 0; i < stages.size(); ++i) {
+            QJsonObject stage = stages.at(i).toObject();
+            QJsonArray milestones = stage.value(kKeyStageMilestones).toArray();
+            for (int j = 0; j < milestones.size(); ++j) {
+                forceDecryptMilestone(i, j);
+            }
+        }
+        rebuildTabs();
+        emit statusMessage(tr("All milestones revealed. Remember to Save!"));
+    });
 
     for (int i = 0; i < stageCount; ++i)
     {
@@ -1217,6 +1295,7 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
 
     struct MilestoneWidgets
     {
+        QLabel *missionLabel = nullptr;
         QLineEdit *progressField = nullptr;
         QCheckBox *doneCheck = nullptr;
         int goalValue = 0;
@@ -1230,6 +1309,30 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
     stageWidgets.reserve(milestones.size());
     QVector<int> stageGoals;
     stageGoals.reserve(milestones.size());
+
+    auto updateMissionLabel = [this](QLabel *label, int stageIndex, int stageMilestoneIndex)
+    {
+        if (!label) {
+            return;
+        }
+        QVariantList milestonePath = {kKeyCommonState, kKeySeasonData, kKeySeasonStages, stageIndex,
+                                      kKeyStageMilestones, stageMilestoneIndex};
+        QJsonObject milestone = valueAtPath(rootDoc_.object(), milestonePath).toObject();
+        if (milestone.isEmpty()) {
+            return;
+        }
+        QString missionToken = milestone.value(kKeyTitleUpper).toString();
+        QString missionName = formatExpeditionToken(missionToken);
+        if (missionName.isEmpty())
+        {
+            missionName = formatExpeditionToken(milestone.value(kKeyMissionName).toString());
+        }
+        if (missionName.isEmpty())
+        {
+            missionName = tr("Mission %1").arg(stageMilestoneIndex + 1);
+        }
+        label->setText(missionName);
+    };
 
     for (int i = 0; i < milestones.size(); ++i)
     {
@@ -1262,14 +1365,6 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
 
         QString missionToken = milestone.value(kKeyTitleUpper).toString();
         QJsonObject encryption = milestone.value(kKeyEncryption).toObject();
-        if (encryption.value(kKeyEncryptionIsEncrypted).toBool() && !isDecryptMissionUnlocked(encryption))
-        {
-            QString encryptedToken = encryption.value(kKeyTitleUpper).toString();
-            if (!encryptedToken.isEmpty())
-            {
-                missionToken = encryptedToken;
-            }
-        }
         QString missionName = formatExpeditionToken(missionToken);
         if (missionName.isEmpty())
         {
@@ -1279,7 +1374,8 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
         {
             missionName = tr("Mission %1").arg(i + 1);
         }
-        layout->addWidget(new QLabel(missionName, group), row, 1);
+        auto *missionLabel = new QLabel(missionName, group);
+        layout->addWidget(missionLabel, row, 1);
 
         int goalValue = static_cast<int>(milestone.value(kKeyMissionAmount).toDouble(0));
         layout->addWidget(new QLabel(formatQuantity(goalValue), group), row, 2);
@@ -1301,7 +1397,7 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
         doneCheck->setChecked(qFuzzyCompare(stored + 1.0, goalValue + 1.0));
         layout->addWidget(doneCheck, row, 4);
 
-        auto commitValue = [this, progressField, milestoneIndex, milestonePath, goalValue, encryption, stageIndex, i]()
+        auto commitValue = [this, progressField, milestoneIndex, milestonePath, goalValue, encryption, stageIndex, i, updateMissionLabel, missionLabel]()
         {
             bool ok = false;
             int value = progressField->text().toInt(&ok);
@@ -1319,6 +1415,7 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
             if (goalValue > 0 && value >= goalValue) {
                 updateDecryptMissionProgress(encryption, 1);
                 forceDecryptMilestone(stageIndex, i);
+                updateMissionLabel(missionLabel, stageIndex, i);
             }
             emit statusMessage(tr("Pending changes — remember to Save!"));
         };
@@ -1326,7 +1423,7 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
         connect(progressField, &QLineEdit::editingFinished, this, [commitValue]()
                 { commitValue(); });
 
-        connect(doneCheck, &QCheckBox::toggled, this, [this, progressField, goalValue, commitValue, encryption, stageIndex, i]()
+        connect(doneCheck, &QCheckBox::toggled, this, [this, progressField, goalValue, commitValue, encryption, stageIndex, i, updateMissionLabel, missionLabel]()
                 {
             if (goalValue <= 0) {
                 return;
@@ -1340,9 +1437,11 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
             } else {
                 updateDecryptMissionProgress(encryption, 1);
                 forceDecryptMilestone(stageIndex, i);
+                updateMissionLabel(missionLabel, stageIndex, i);
             } });
 
         MilestoneWidgets widgets;
+        widgets.missionLabel = missionLabel;
         widgets.progressField = progressField;
         widgets.doneCheck = doneCheck;
         widgets.goalValue = goalValue;
@@ -1370,7 +1469,7 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
         completeAll->setChecked(allComplete);
         layout->addWidget(completeAll, 0, 3, 1, 2, Qt::AlignRight);
 
-        connect(completeAll, &QCheckBox::toggled, this, [this, stageWidgets, stageGoals, milestonePath](bool checked)
+        connect(completeAll, &QCheckBox::toggled, this, [this, stageWidgets, stageGoals, milestonePath, updateMissionLabel](bool checked)
                 {
             QJsonArray values = valueAtPath(rootDoc_.object(), milestonePath).toArray();
             bool updated = false;
@@ -1397,6 +1496,7 @@ QWidget *InventoryEditorPage::buildExpeditionStage(const QJsonObject &stage, con
                 if (checked && goal > 0) {
                     updateDecryptMissionProgress(widgets.encryption, 1);
                     forceDecryptMilestone(widgets.stageIndex, widgets.stageMilestoneIndex);
+                    updateMissionLabel(widgets.missionLabel, widgets.stageIndex, widgets.stageMilestoneIndex);
                 }
                 updated = true;
             }

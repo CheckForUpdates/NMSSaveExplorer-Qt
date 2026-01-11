@@ -312,3 +312,51 @@ QList<SaveSlot> SaveGameLocator::discoverSaveSlots()
 
     return saveSlots;
 }
+
+QList<SaveSlot> SaveGameLocator::scanDirectory(const QString &path)
+{
+    QHash<QString, SlotCandidate> result;
+    QDir rootDir(path);
+    if (!rootDir.exists()) {
+        return {};
+    }
+
+    QDirIterator it(path, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        QFileInfo info(it.next());
+        if (!isPrimarySaveFile(info)) {
+            continue;
+        }
+        int saveIndex = saveIndexFromFilename(info.fileName());
+        int groupIndex = saveGroupFromIndex(saveIndex);
+        if (groupIndex < 0) {
+            continue;
+        }
+        QString slotFolder = info.absolutePath();
+        QString key = slotKeyForFolder(slotFolder, groupIndex);
+        SlotCandidate &candidate = result[key];
+        if (candidate.slotPath.isEmpty()) {
+            candidate.slotPath = canonicalFolderPath(slotFolder);
+            candidate.root = path;
+        }
+        candidate.consider(info);
+    }
+
+    QList<SaveSlot> saveSlots;
+    saveSlots.reserve(result.size());
+    for (const SlotCandidate &candidate : result) {
+        SaveSlot slot = candidate.toSaveSlot();
+        if (!slot.latestSave.isEmpty()) {
+            saveSlots.append(slot);
+        }
+    }
+
+    std::sort(saveSlots.begin(), saveSlots.end(), [](const SaveSlot &a, const SaveSlot &b) {
+        if (a.lastModified == b.lastModified) {
+            return a.displayName().toLower() < b.displayName().toLower();
+        }
+        return a.lastModified > b.lastModified;
+    });
+
+    return saveSlots;
+}
