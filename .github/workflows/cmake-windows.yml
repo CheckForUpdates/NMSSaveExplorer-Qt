@@ -23,7 +23,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: 6.6.3
+          version: 6.10.1
           arch: win64_msvc2022_64
           cache: true
 
