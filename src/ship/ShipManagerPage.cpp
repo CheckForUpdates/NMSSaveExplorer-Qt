@@ -3,10 +3,9 @@
 #include "core/JsonMapper.h"
 #include "core/LosslessJsonDocument.h"
 #include "core/ResourceLocator.h"
-#include "core/SaveDecoder.h"
+#include "core/SaveCache.h"
 #include "core/SaveEncoder.h"
 #include "core/SaveJsonModel.h"
-#include "core/Utf8Diagnostics.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -16,13 +15,17 @@
 #include <QFile>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSet>
 #include <QVBoxLayout>
 #include <QJsonParseError>
 
@@ -368,6 +371,63 @@ void setSeedValue(QJsonObject &resource, const QString &raw)
     }
     resource.insert(kKeySeedLong, QJsonArray{true, formatted});
 }
+
+QJsonValue remapKeysToLong(const QJsonValue &value)
+{
+    if (value.isObject()) {
+        QJsonObject out;
+        QSet<QString> longKeys;
+        QJsonObject obj = value.toObject();
+        for (auto it = obj.begin(); it != obj.end(); ++it) {
+            QString mapped = JsonMapper::mapKey(it.key());
+            QJsonValue remappedValue = remapKeysToLong(it.value());
+            bool isLong = (it.key() == mapped);
+            if (out.contains(mapped) && !isLong && longKeys.contains(mapped)) {
+                continue;
+            }
+            if (isLong) {
+                longKeys.insert(mapped);
+            }
+            out.insert(mapped, remappedValue);
+        }
+        return out;
+    }
+    if (value.isArray()) {
+        QJsonArray array = value.toArray();
+        QJsonArray out;
+        for (const QJsonValue &element : array) {
+            out.append(remapKeysToLong(element));
+        }
+        return out;
+    }
+    return value;
+}
+
+QJsonValue remapKeysToShort(const QJsonValue &value, const QHash<QString, QString> &longToShort)
+{
+    if (value.isObject()) {
+        QJsonObject out;
+        QJsonObject obj = value.toObject();
+        for (auto it = obj.begin(); it != obj.end(); ++it) {
+            QString mapped = longToShort.value(it.key(), it.key());
+            bool isLong = (mapped != it.key());
+            if (out.contains(mapped) && isLong) {
+                continue;
+            }
+            out.insert(mapped, remapKeysToShort(it.value(), longToShort));
+        }
+        return out;
+    }
+    if (value.isArray()) {
+        QJsonArray array = value.toArray();
+        QJsonArray out;
+        for (const QJsonValue &element : array) {
+            out.append(remapKeysToShort(element, longToShort));
+        }
+        return out;
+    }
+    return value;
+}
 }
 
 ShipManagerPage::ShipManagerPage(QWidget *parent)
@@ -379,57 +439,27 @@ ShipManagerPage::ShipManagerPage(QWidget *parent)
 bool ShipManagerPage::loadFromFile(const QString &filePath, QString *errorMessage)
 {
     QByteArray contentBytes;
-    if (filePath.endsWith(".hg", Qt::CaseInsensitive))
-    {
-        contentBytes = SaveDecoder::decodeSaveBytes(filePath, errorMessage);
-    }
-    else
-    {
-        QFile file(filePath);
-        if (!file.open(QIODevice::ReadOnly))
-        {
-            if (errorMessage)
-            {
-                *errorMessage = tr("Unable to open %1").arg(filePath);
-            }
-            return false;
-        }
-        contentBytes = file.readAll();
-    }
-
-    if (contentBytes.isEmpty())
-    {
-        if (errorMessage && errorMessage->isEmpty())
-        {
-            *errorMessage = tr("No data loaded from %1").arg(filePath);
-        }
+    QJsonDocument doc;
+    std::shared_ptr<LosslessJsonDocument> lossless;
+    if (!SaveCache::loadWithLossless(filePath, &contentBytes, &doc, &lossless, errorMessage)) {
         return false;
     }
+    return loadFromPrepared(filePath, doc, lossless, errorMessage);
+}
 
-    auto lossless = std::make_shared<LosslessJsonDocument>();
-    if (!lossless->parse(contentBytes, errorMessage)) {
-        return false;
-    }
-
-    bool sanitized = false;
-    QByteArray qtBytes = sanitizeJsonUtf8ForQt(contentBytes, &sanitized);
-    QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(qtBytes, &parseError);
-    if (parseError.error != QJsonParseError::NoError)
-    {
-        if (errorMessage)
-        {
-            *errorMessage = tr("JSON parse error: %1").arg(parseError.errorString());
+bool ShipManagerPage::loadFromPrepared(
+    const QString &filePath, const QJsonDocument &doc,
+    const std::shared_ptr<LosslessJsonDocument> &losslessDoc, QString *errorMessage)
+{
+    if (!losslessDoc) {
+        if (errorMessage) {
+            *errorMessage = tr("Failed to load lossless JSON.");
         }
-        logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
         return false;
-    }
-    if (sanitized) {
-        qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
     }
 
     rootDoc_ = doc;
-    losslessDoc_ = lossless;
+    losslessDoc_ = losslessDoc;
     currentFilePath_ = filePath;
     hasUnsavedChanges_ = false;
     if (!syncRootFromLossless(errorMessage)) {
@@ -500,6 +530,23 @@ const QString &ShipManagerPage::currentFilePath() const
     return currentFilePath_;
 }
 
+void ShipManagerPage::clearLoadedSave()
+{
+    currentFilePath_.clear();
+    rootDoc_ = QJsonDocument();
+    losslessDoc_.reset();
+    hasUnsavedChanges_ = false;
+    usingExpeditionContext_ = false;
+    ships_.clear();
+    activeShipIndex_ = -1;
+    if (shipCombo_) {
+        shipCombo_->blockSignals(true);
+        shipCombo_->clear();
+        shipCombo_->blockSignals(false);
+    }
+    setActiveShip(-1);
+}
+
 void ShipManagerPage::buildUi()
 {
     auto *layout = new QVBoxLayout(this);
@@ -510,8 +557,12 @@ void ShipManagerPage::buildUi()
     row->setSpacing(8);
     row->addWidget(new QLabel(tr("Ship:"), this));
     shipCombo_ = new QComboBox(this);
-    shipCombo_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    shipCombo_->setFixedWidth(280);
     row->addWidget(shipCombo_);
+    importButton_ = new QPushButton(tr("Import"), this);
+    exportButton_ = new QPushButton(tr("Export"), this);
+    row->addWidget(importButton_);
+    row->addWidget(exportButton_);
     row->addStretch();
     layout->addLayout(row);
 
@@ -616,6 +667,8 @@ void ShipManagerPage::buildUi()
                 }
                 setActiveShip(ships_.at(index).index);
             });
+    connect(importButton_, &QPushButton::clicked, this, &ShipManagerPage::importShip);
+    connect(exportButton_, &QPushButton::clicked, this, &ShipManagerPage::exportShip);
 
     connect(nameField_, &QLineEdit::editingFinished, this, [this]() {
         int index = activeShipIndex_;
@@ -783,6 +836,156 @@ void ShipManagerPage::setActiveShip(int index)
     }
     QJsonObject ship = ships.at(index).toObject();
     refreshShipFields(ship);
+}
+
+void ShipManagerPage::importShip()
+{
+    QString path = QFileDialog::getOpenFileName(
+        this,
+        tr("Import Ship"),
+        QString(),
+        tr("Ship Files (*.sh0 *.json *.shp);;JSON Files (*.json);;Companion Ship Files (*.shp);;All Files (*.*)"));
+    if (path.isEmpty()) {
+        return;
+    }
+
+    QJsonArray ships = shipOwnershipArray();
+    int emptySlotIndex = -1;
+    for (int i = 0; i < ships.size(); ++i) {
+        if (isEmptyShipSlot(ships.at(i).toObject())) {
+            emptySlotIndex = i;
+            break;
+        }
+    }
+
+    bool importedIntoEmptySlot = false;
+    int targetIndex = -1;
+    if (emptySlotIndex >= 0) {
+        targetIndex = emptySlotIndex;
+        importedIntoEmptySlot = true;
+    } else {
+        if (activeShipIndex_ < 0) {
+            QMessageBox::information(this, tr("Import Ship"), tr("Select a ship to replace."));
+            return;
+        }
+        if (activeShipIndex_ >= ships.size()) {
+            QMessageBox::warning(this, tr("Import Ship"), tr("Selected ship is unavailable."));
+            return;
+        }
+        QJsonObject selectedShip = ships.at(activeShipIndex_).toObject();
+        QString selectedName = shipNameFromObject(selectedShip).trimmed();
+        if (selectedName.isEmpty()) {
+            selectedName = tr("Ship %1").arg(activeShipIndex_ + 1);
+        }
+        if (QMessageBox::question(this,
+                                  tr("Replace Ship"),
+                                  tr("Replace %1 with the imported data?").arg(selectedName))
+            != QMessageBox::Yes) {
+            return;
+        }
+        targetIndex = activeShipIndex_;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Import Ship"), tr("Unable to open %1").arg(path));
+        return;
+    }
+
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        QMessageBox::warning(this, tr("Import Ship"), tr("Invalid ship file."));
+        return;
+    }
+
+    QJsonObject root = doc.object();
+    bool isCompanionExport = root.contains(QStringLiteral("Ship"))
+        && root.contains(QStringLiteral("FileVersion"))
+        && root.contains(QStringLiteral("Thumbnail"));
+    if (isCompanionExport) {
+        if (QMessageBox::question(this,
+                                  tr("Import Ship"),
+                                  tr("This ship appears to be exported by No Man's Sky Companion. Import it into NMSSaveEditor?"))
+            != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    ensureMappingLoaded();
+    QHash<QString, QString> longToShort;
+    const auto mapping = JsonMapper::mapping();
+    for (auto it = mapping.begin(); it != mapping.end(); ++it) {
+        longToShort.insert(it.value(), it.key());
+    }
+    QJsonObject sourceObject = root;
+    if (root.contains(QStringLiteral("Ship")) && root.value(QStringLiteral("Ship")).isObject()) {
+        sourceObject = root.value(QStringLiteral("Ship")).toObject();
+    }
+    QJsonObject shipData = remapKeysToShort(sourceObject, longToShort).toObject();
+    if (shipData.isEmpty()) {
+        QMessageBox::warning(this, tr("Import Ship"), tr("No ship data found."));
+        return;
+    }
+
+    updateShipAtIndex(targetIndex, [shipData](QJsonObject &ship) {
+        ship = shipData;
+    });
+    if (importedIntoEmptySlot) {
+        rebuildShipList();
+        for (int i = 0; i < ships_.size(); ++i) {
+            if (ships_.at(i).index == targetIndex) {
+                shipCombo_->setCurrentIndex(i);
+                setActiveShip(targetIndex);
+                break;
+            }
+        }
+    }
+    emit statusMessage(tr("Imported ship from %1").arg(QFileInfo(path).fileName()));
+}
+
+void ShipManagerPage::exportShip()
+{
+    if (activeShipIndex_ < 0) {
+        QMessageBox::information(this, tr("Export Ship"), tr("Select a ship first."));
+        return;
+    }
+
+    QJsonArray ships = shipOwnershipArray();
+    if (activeShipIndex_ >= ships.size()) {
+        QMessageBox::warning(this, tr("Export Ship"), tr("Selected ship is unavailable."));
+        return;
+    }
+
+    QJsonObject ship = ships.at(activeShipIndex_).toObject();
+    ensureMappingLoaded();
+    QJsonObject exportShip = remapKeysToLong(ship).toObject();
+
+    QString name = shipNameFromObject(ship).trimmed();
+    if (name.isEmpty()) {
+        name = shipTypeFromObject(ship).trimmed();
+    }
+    if (name.isEmpty()) {
+        name = tr("Ship%1").arg(activeShipIndex_ + 1);
+    }
+    QString fileName = name + ".sh0";
+    QString path = QFileDialog::getSaveFileName(
+        this,
+        tr("Export Ship"),
+        fileName,
+        tr("Ship Files (*.sh0 *.json);;JSON Files (*.json)"));
+    if (path.isEmpty()) {
+        return;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, tr("Export Ship"), tr("Unable to write %1").arg(path));
+        return;
+    }
+    QJsonDocument doc(exportShip);
+    file.write(doc.toJson(QJsonDocument::Indented));
+    emit statusMessage(tr("Exported ship to %1").arg(QFileInfo(path).fileName()));
 }
 
 QJsonObject ShipManagerPage::activePlayerState() const

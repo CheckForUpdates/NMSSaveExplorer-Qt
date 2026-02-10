@@ -4,10 +4,13 @@
 #include "registry/IconRegistry.h"
 #include "registry/ItemCatalog.h"
 #include "registry/ItemDefinitionRegistry.h"
+#include "ui/LoadingOverlay.h"
 
 #include <algorithm>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDomDocument>
+#include <QEventLoop>
 #include <QFile>
 #include <QHeaderView>
 #include <QLineEdit>
@@ -101,6 +104,15 @@ void loadCategoriesFromTable(QHash<QString, QString> &categories, const QString 
         while (!child.isNull()) {
             if (child.attribute("name") == categoryPropName) {
                 category = child.attribute("value");
+                QDomElement nested = child.firstChildElement("Property");
+                while (!nested.isNull()) {
+                    const QString nestedValue = nested.attribute("value");
+                    if (!nestedValue.isEmpty()) {
+                        category = nestedValue;
+                        break;
+                    }
+                    nested = nested.nextSiblingElement("Property");
+                }
                 break;
             }
             child = child.nextSiblingElement("Property");
@@ -117,6 +129,7 @@ QHash<QString, QString> loadProductCategories()
 {
     QHash<QString, QString> categories;
     loadCategoriesFromTable(categories, "nms_reality_gcproducttable.MXML", "GcProductData", "Category");
+    loadCategoriesFromTable(categories, "nms_basepartproducts.MXML", "GcProductData", "Category");
     loadCategoriesFromTable(categories, "nms_reality_gcsubstancetable.MXML", "GcRealitySubstanceData", "Category");
     return categories;
 }
@@ -169,6 +182,7 @@ KnownProductDialog::KnownProductDialog(const QJsonArray &knownProducts, QWidget 
     searchRow->addStretch();
     layout->addLayout(searchRow);
     layout->addWidget(table_);
+    loadingOverlay_ = new LoadingOverlay(this);
 
     connect(addButton_, &QPushButton::clicked, this, &KnownProductDialog::addProduct);
     connect(removeButton_, &QPushButton::clicked, this, &KnownProductDialog::removeSelected);
@@ -321,7 +335,9 @@ void KnownProductDialog::addProduct()
     for (const QString &selected : addIds) {
         knownIds_.append(selected);
     }
+    showBusyOverlay(tr("Please wait..."));
     rebuildTable();
+    hideBusyOverlay();
     hasChanges_ = true;
     emit knownProductsChanged(updatedProducts());
 }
@@ -395,7 +411,9 @@ void KnownProductDialog::removeSelected()
         }
     }
     knownIds_ = filtered;
+    showBusyOverlay(tr("Please wait..."));
     rebuildTable();
+    hideBusyOverlay();
     refreshRemoveEnabled();
     hasChanges_ = true;
     emit knownProductsChanged(updatedProducts());
@@ -421,5 +439,21 @@ void KnownProductDialog::filterTable(const QString &text)
         }
         bool match = needle.isEmpty() || textValue.toLower().contains(needle);
         table_->setRowHidden(row, !match);
+    }
+}
+
+void KnownProductDialog::showBusyOverlay(const QString &message)
+{
+    if (!loadingOverlay_) {
+        return;
+    }
+    loadingOverlay_->showMessage(message);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void KnownProductDialog::hideBusyOverlay()
+{
+    if (loadingOverlay_) {
+        loadingOverlay_->hide();
     }
 }

@@ -13,6 +13,7 @@
 
 namespace {
 const char *kProductTable = "data/nms_reality_gcproducttable.MXML";
+const char *kBasePartProductTable = "data/nms_basepartproducts.MXML";
 const char *kSubstanceTable = "data/nms_reality_gcsubstancetable.MXML";
 const char *kTechnologyTable = "data/nms_reality_gctechnologytable.MXML";
 const char *kProceduralTechnologyTable = "data/nms_reality_gcproceduraltechnologytable.MXML";
@@ -125,6 +126,7 @@ void ItemCatalog::loadCatalog()
     }
     QHash<QString, ItemEntry> entries;
     parseProductTable(entries);
+    parseBasePartProductTable(entries);
     parseSubstanceTable(entries);
     parseTechnologyTable(entries);
     parseProceduralTechnologyTable(entries);
@@ -149,6 +151,45 @@ void ItemCatalog::loadCatalog()
 void ItemCatalog::parseProductTable(QHash<QString, ItemEntry> &entries)
 {
     QString path = ResourceLocator::resolveResource(kProductTable);
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return;
+    }
+    QDomDocument doc;
+    if (!doc.setContent(&file)) {
+        return;
+    }
+    QDomNodeList nodes = doc.elementsByTagName("Property");
+    for (int i = 0; i < nodes.count(); ++i) {
+        QDomElement element = nodes.at(i).toElement();
+        if (element.isNull()) {
+            continue;
+        }
+        if (element.attribute("value") != "GcProductData") {
+            continue;
+        }
+        QString id = normalizeId(element.attribute("_id"));
+        if (id.isEmpty()) {
+            continue;
+        }
+        QDomElement child = element.firstChildElement("Property");
+        int multiplier = 1;
+        while (!child.isNull()) {
+            if (child.attribute("name") == "StackMultiplier") {
+                multiplier = readIntAttribute(child.attribute("value"), 1);
+                break;
+            }
+            child = child.nextSiblingElement("Property");
+        }
+        int base = kBaseStacks.value(ItemType::Product, 1);
+        ItemEntry entry{ id, QString(), ItemType::Product, multiplier * base };
+        entries.insert(id, entry);
+    }
+}
+
+void ItemCatalog::parseBasePartProductTable(QHash<QString, ItemEntry> &entries)
+{
+    QString path = ResourceLocator::resolveResource(kBasePartProductTable);
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return;

@@ -9,6 +9,7 @@
 class QTableWidget;
 class QPushButton;
 class QLineEdit;
+class LoadingOverlay;
 
 class KnownProductDialog : public QWidget
 {
@@ -29,6 +30,8 @@ private:
     void removeSelected();
     void filterTable(const QString &text);
     QString normalizedId(const QString &value) const;
+    void showBusyOverlay(const QString &message);
+    void hideBusyOverlay();
 
     QLineEdit *searchField_ = nullptr;
     QTableWidget *table_ = nullptr;
@@ -37,4 +40,5 @@ private:
     QStringList knownIds_;
     QList<ItemEntry> allEntries_;
     bool hasChanges_ = false;
+    LoadingOverlay *loadingOverlay_ = nullptr;
 };

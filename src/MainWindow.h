@@ -48,6 +48,8 @@ private:
     void buildUi();
     void buildMenus();
     void refreshSaveSlots();
+    bool confirmRefreshUnload();
+    void unloadCurrentSave();
     void browseForSave();
     void browseForSaveDirectory();
     void loadSelectedSave();
@@ -67,6 +69,8 @@ private:
     void syncOtherSave();
     void undoSync();
     void setStatus(const QString &text);
+    void loadSaveInBackground(const QString &path, const QString &statusText,
+                              const std::function<void(const LoadResult &)> &onLoaded);
     void selectPage(const QString &key);
     bool ensureSaveLoaded();
     bool hasPendingChanges() const;

@@ -4,6 +4,7 @@
 #include <QJsonValue>
 #include <QString>
 #include <QVariantList>
+#include <memory>
 
 #include <rapidjson/document.h>
 
@@ -13,6 +14,7 @@ public:
     bool parse(const QByteArray &json, QString *errorMessage = nullptr);
     QByteArray toJson(bool pretty = false) const;
     bool setValueAtPath(const QVariantList &path, const QJsonValue &value);
+    std::shared_ptr<LosslessJsonDocument> clone() const;
 
     bool isNull() const { return doc_.IsNull(); }
     bool isArray() const { return doc_.IsArray(); }

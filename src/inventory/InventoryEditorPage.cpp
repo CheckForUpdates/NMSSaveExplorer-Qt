@@ -1,9 +1,8 @@
 #include "inventory/InventoryEditorPage.h"
 
-#include "core/SaveDecoder.h"
+#include "core/SaveCache.h"
 #include "core/SaveEncoder.h"
 #include "core/ResourceLocator.h"
-#include "core/Utf8Diagnostics.h"
 #include "inventory/InventoryGridWidget.h"
 #include "registry/IconRegistry.h"
 #include "registry/ItemDefinitionRegistry.h"
@@ -29,7 +28,6 @@
 #include <QPushButton>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QJsonParseError>
 #include <QScrollArea>
 #include <QTabBar>
 #include <QTabWidget>
@@ -138,57 +136,27 @@ InventoryEditorPage::InventoryEditorPage(QWidget *parent, InventorySections sect
 bool InventoryEditorPage::loadFromFile(const QString &filePath, QString *errorMessage)
 {
     QByteArray contentBytes;
-    if (filePath.endsWith(".hg", Qt::CaseInsensitive))
-    {
-        contentBytes = SaveDecoder::decodeSaveBytes(filePath, errorMessage);
-    }
-    else
-    {
-        QFile file(filePath);
-        if (!file.open(QIODevice::ReadOnly))
-        {
-            if (errorMessage)
-            {
-                *errorMessage = tr("Unable to open %1").arg(filePath);
-            }
-            return false;
-        }
-        contentBytes = file.readAll();
-    }
-
-    if (contentBytes.isEmpty())
-    {
-        if (errorMessage && errorMessage->isEmpty())
-        {
-            *errorMessage = tr("No data loaded from %1").arg(filePath);
-        }
+    QJsonDocument doc;
+    std::shared_ptr<LosslessJsonDocument> lossless;
+    if (!SaveCache::loadWithLossless(filePath, &contentBytes, &doc, &lossless, errorMessage)) {
         return false;
     }
+    return loadFromPrepared(filePath, doc, lossless, errorMessage);
+}
 
-    auto lossless = std::make_shared<LosslessJsonDocument>();
-    if (!lossless->parse(contentBytes, errorMessage)) {
-        return false;
-    }
-
-    bool sanitized = false;
-    QByteArray qtBytes = sanitizeJsonUtf8ForQt(contentBytes, &sanitized);
-    QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(qtBytes, &parseError);
-    if (parseError.error != QJsonParseError::NoError)
-    {
-        if (errorMessage)
-        {
-            *errorMessage = tr("JSON parse error: %1").arg(parseError.errorString());
+bool InventoryEditorPage::loadFromPrepared(
+    const QString &filePath, const QJsonDocument &doc,
+    const std::shared_ptr<LosslessJsonDocument> &losslessDoc, QString *errorMessage)
+{
+    if (!losslessDoc) {
+        if (errorMessage) {
+            *errorMessage = tr("Failed to load lossless JSON.");
         }
-        logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
         return false;
-    }
-    if (sanitized) {
-        qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
     }
 
     rootDoc_ = doc;
-    losslessDoc_ = lossless;
+    losslessDoc_ = losslessDoc;
     currentFilePath_ = filePath;
     hasUnsavedChanges_ = false;
     if (!syncRootFromLossless(errorMessage)) {
@@ -268,6 +236,30 @@ bool InventoryEditorPage::saveChanges(QString *errorMessage)
     return true;
 }
 
+void InventoryEditorPage::clearLoadedSave()
+{
+    tabs_->clear();
+    rootDoc_ = QJsonDocument();
+    losslessDoc_.reset();
+    currentFilePath_.clear();
+    hasUnsavedChanges_ = false;
+    usingExpeditionContext_ = false;
+    selectedShipIndex_ = 0;
+    selectedMultitoolIndex_ = 0;
+}
+
+void InventoryEditorPage::setShowIds(bool show)
+{
+    if (showIds_ == show) {
+        return;
+    }
+    showIds_ = show;
+    const auto grids = findChildren<InventoryGridWidget *>();
+    for (auto *grid : grids) {
+        grid->setShowIds(showIds_);
+    }
+}
+
 void InventoryEditorPage::rebuildTabs()
 {
     int currentIndex = tabs_->currentIndex();
@@ -318,20 +310,17 @@ void InventoryEditorPage::rebuildTabs()
 
         auto *grid = new InventoryGridWidget(this);
         grid->setInventory(desc.name, slotsArray, valid, specialSlots);
+        grid->setShowIds(showIds_);
         grid->setCommitHandler([this, desc](const QJsonArray &updatedSlots, const QJsonArray &updatedValid, const QJsonArray &updatedSpecial)
                                {
-            QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
-                                                      : QJsonValue(rootDoc_.array());
-            QJsonValue currentSlots = valueAtPath(rootValue, desc.slotsPath);
-            applyDiffAtPath(desc.slotsPath, currentSlots, updatedSlots);
+            applyValueAtPath(desc.slotsPath, updatedSlots, true);
             if (!desc.validPath.isEmpty()) {
-                QJsonValue currentValid = valueAtPath(rootValue, desc.validPath);
-                applyDiffAtPath(desc.validPath, currentValid, updatedValid);
+                applyValueAtPath(desc.validPath, updatedValid, true);
             }
             if (!desc.specialSlotsPath.isEmpty()) {
-                QJsonValue currentSpecial = valueAtPath(rootValue, desc.specialSlotsPath);
-                applyDiffAtPath(desc.specialSlotsPath, currentSpecial, updatedSpecial);
-            } });
+                applyValueAtPath(desc.specialSlotsPath, updatedSpecial, true);
+            }
+            finalizeDeferredSync(); });
         connect(grid, &InventoryGridWidget::statusMessage, this, &InventoryEditorPage::statusMessage);
 
         auto *scroll = new QScrollArea(this);
@@ -957,7 +946,7 @@ QJsonValue InventoryEditorPage::setValueAtPath(const QJsonValue &root, const QVa
     return root;
 }
 
-void InventoryEditorPage::applyValueAtPath(const QVariantList &path, const QJsonValue &value)
+void InventoryEditorPage::applyValueAtPath(const QVariantList &path, const QJsonValue &value, bool deferSync)
 {
     if (!losslessDoc_) {
         QJsonValue rootValue = rootDoc_.isObject() ? QJsonValue(rootDoc_.object())
@@ -1027,7 +1016,9 @@ void InventoryEditorPage::applyValueAtPath(const QVariantList &path, const QJson
         }
     }
 
-    SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_);
+    if (!deferSync) {
+        SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_);
+    }
     hasUnsavedChanges_ = true;
 }
 
@@ -1059,6 +1050,14 @@ void InventoryEditorPage::applyDiffAtPath(const QVariantList &path, const QJsonV
         return;
     }
     applyValueAtPath(path, updated);
+}
+
+void InventoryEditorPage::finalizeDeferredSync()
+{
+    if (!losslessDoc_) {
+        return;
+    }
+    SaveJsonModel::syncRootFromLossless(losslessDoc_, rootDoc_);
 }
 
 QJsonObject InventoryEditorPage::activePlayerState() const
@@ -1760,14 +1759,14 @@ QWidget *InventoryEditorPage::buildStorageManager()
         window->setWindowTitle(desc.name);
         auto *grid = new InventoryGridWidget(window);
         grid->setInventory(desc.name, slotsArray, valid);
+        grid->setShowIds(showIds_);
         grid->setCommitHandler([this, desc](const QJsonArray &updatedSlots, const QJsonArray &updatedValid, const QJsonArray &)
                                {
-            QJsonValue currentSlots = valueAtPath(rootDoc_.object(), desc.slotsPath);
-            applyDiffAtPath(desc.slotsPath, currentSlots, updatedSlots);
+            applyValueAtPath(desc.slotsPath, updatedSlots, true);
             if (!desc.validPath.isEmpty()) {
-                QJsonValue currentValid = valueAtPath(rootDoc_.object(), desc.validPath);
-                applyDiffAtPath(desc.validPath, currentValid, updatedValid);
+                applyValueAtPath(desc.validPath, updatedValid, true);
             }
+            finalizeDeferredSync();
         });
         connect(grid, &InventoryGridWidget::statusMessage, this, &InventoryEditorPage::statusMessage);
         auto *scroll = new QScrollArea(window);

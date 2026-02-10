@@ -30,6 +30,7 @@ Qt6 (Widgets + Xml) is required. On Windows, use the Qt installer, choose Custom
 ## Resources
 - Runtime assets live in `src/resources`.
 - If you bundle assets elsewhere, set `NMS_SAVE_EXPLORER_RESOURCES` to the resources root directory.
+- To bundle assets into resource libraries/binaries (Windows default, optional on Linux), pass `-DNMS_RESOURCE_LIBS=ON`.
 
 ## Packaging (portable)
 
