@@ -1,0 +1,2 @@
+# Store all resources in Git LFS
+src/resources/** filter=lfs diff=lfs merge=lfs -text
