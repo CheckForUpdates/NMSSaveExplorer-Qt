@@ -29,8 +29,24 @@ QStringList linuxCandidates()
             QDir(home).filePath(".local/share/Steam"),
             QDir(home).filePath(".steam/debian-installation")
         };
+        QSet<QString> seenSteamRoots;
         for (const QString &steamRoot : steamRoots) {
-            QDir compat(QDir(steamRoot).filePath("steamapps/compatdata/275850"));
+            QFileInfo steamInfo(steamRoot);
+            QString canonicalSteam = steamInfo.canonicalFilePath();
+            QString resolvedSteam = canonicalSteam;
+            if (resolvedSteam.isEmpty() && steamInfo.isSymLink()) {
+                QFileInfo targetInfo(steamInfo.symLinkTarget());
+                resolvedSteam = targetInfo.canonicalFilePath();
+            }
+            if (resolvedSteam.isEmpty()) {
+                resolvedSteam = steamInfo.absoluteFilePath();
+            }
+            QString steamKey = resolvedSteam;
+            if (seenSteamRoots.contains(steamKey)) {
+                continue;
+            }
+            seenSteamRoots.insert(steamKey);
+            QDir compat(QDir(resolvedSteam).filePath("steamapps/compatdata/275850"));
             if (!compat.exists()) {
                 continue;
             }
@@ -40,7 +56,6 @@ QStringList linuxCandidates()
             }
             QFileInfoList users = usersRoot.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
             for (const QFileInfo &user : users) {
-                roots << QDir(user.absoluteFilePath()).filePath("Application Data/HelloGames/NMS");
                 roots << QDir(user.absoluteFilePath()).filePath("AppData/Roaming/HelloGames/NMS");
             }
         }
@@ -245,35 +260,8 @@ QList<SaveSlot> SaveGameLocator::discoverSaveSlots()
         }
 
         QDirIterator it(root, QDir::Files, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        QFileInfo info(it.next());
-        if (!isPrimarySaveFile(info)) {
-            continue;
-        }
-        int saveIndex = saveIndexFromFilename(info.fileName());
-        int groupIndex = saveGroupFromIndex(saveIndex);
-        if (groupIndex < 0) {
-            continue;
-        }
-        QString slotFolder = info.absolutePath();
-        QString key = slotKeyForFolder(slotFolder, groupIndex);
-        SlotCandidate &candidate = result[key];
-        if (candidate.slotPath.isEmpty()) {
-            candidate.slotPath = canonicalFolderPath(slotFolder);
-            candidate.root = root;
-        }
-            candidate.consider(info);
-        }
-
-        QFileInfoList children = rootDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot);
-        for (const QFileInfo &child : children) {
-            if (!child.fileName().startsWith("st_")) {
-                continue;
-            }
-            QDir profileDir(child.absoluteFilePath());
-            QDirIterator profileIt(profileDir.path(), QDir::Files, QDirIterator::Subdirectories);
-            while (profileIt.hasNext()) {
-            QFileInfo info(profileIt.next());
+        while (it.hasNext()) {
+            QFileInfo info(it.next());
             if (!isPrimarySaveFile(info)) {
                 continue;
             }
@@ -289,8 +277,7 @@ QList<SaveSlot> SaveGameLocator::discoverSaveSlots()
                 candidate.slotPath = canonicalFolderPath(slotFolder);
                 candidate.root = root;
             }
-                candidate.consider(info);
-            }
+            candidate.consider(info);
         }
     }
 

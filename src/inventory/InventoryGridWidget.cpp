@@ -260,6 +260,15 @@ void InventoryGridWidget::setCommitHandler(const std::function<void(const QJsonA
     commitHandler_ = handler;
 }
 
+void InventoryGridWidget::setShowIds(bool show)
+{
+    if (showIds_ == show) {
+        return;
+    }
+    showIds_ = show;
+    hideNameOverlay();
+}
+
 void InventoryGridWidget::rebuild()
 {
     while (QLayoutItem *item = grid_->takeAt(0)) {
@@ -475,15 +484,20 @@ void InventoryGridWidget::showItemInfo(InventoryCell *cell)
         typeLabel = typeRaw;
     }
 
-    QString displayName = ItemDefinitionRegistry::displayNameForId(rawId);
-    if (displayName.isEmpty()) {
-        displayName = ItemDefinitionRegistry::displayNameForId(id);
-    }
-    if (displayName.isEmpty()) {
-        displayName = cell->displayName();
-    }
-    if (displayName.isEmpty()) {
-        displayName = tr("Unknown");
+    QString displayName;
+    if (showIds_) {
+        displayName = idLabel;
+    } else {
+        displayName = ItemDefinitionRegistry::displayNameForId(rawId);
+        if (displayName.isEmpty()) {
+            displayName = ItemDefinitionRegistry::displayNameForId(id);
+        }
+        if (displayName.isEmpty()) {
+            displayName = cell->displayName();
+        }
+        if (displayName.isEmpty()) {
+            displayName = tr("Unknown");
+        }
     }
 
     QString text = tr("Name: %1\nID: %2\nType: %3").arg(displayName, idLabel, typeLabel);
@@ -866,7 +880,11 @@ void InventoryGridWidget::repairAllDamaged()
 void InventoryGridWidget::showNameOverlay(InventoryCell *cell)
 {
     if (!cell || !nameOverlay_) return;
-    QString text = cell->displayName();
+    if (!cell->hasItem()) return;
+    QString text = showIds_ ? cell->itemId() : cell->displayName();
+    if (text.isEmpty()) {
+        text = showIds_ ? cell->displayName() : cell->itemId();
+    }
     if (text.isEmpty()) return;
 
     nameOverlay_->setText(text);
@@ -999,13 +1017,15 @@ void InventoryGridWidget::InventoryCell::setContent(const QJsonObject &item, int
     item_ = item;
     auto *grid = qobject_cast<InventoryGridWidget *>(parentWidget());
     damaged_ = isDamagedItem(item_, grid ? grid->title() : QString());
-    QString id = item.value("b2n").toString();
+    QString rawId = item.value("b2n").toString();
+    QString normalized = normalizedItemId(item);
+    id_ = normalized.isEmpty() ? rawId : normalized;
     int amount = item.value("1o9").toInt(1);
     int max = item.value("F9q").toInt(0);
 
-    QPixmap icon = IconRegistry::iconForId(id);
-    if (icon.isNull() && id.startsWith('^')) {
-        icon = IconRegistry::iconForId(id.mid(1));
+    QPixmap icon = IconRegistry::iconForId(rawId);
+    if (icon.isNull() && rawId.startsWith('^')) {
+        icon = IconRegistry::iconForId(rawId.mid(1));
     }
     if (!icon.isNull()) {
         iconLabel_->setPixmap(icon.scaled(iconSize, iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
@@ -1020,8 +1040,11 @@ void InventoryGridWidget::InventoryCell::setContent(const QJsonObject &item, int
         amountLabel_->show();
     }
 
-    QString displayName = ItemDefinitionRegistry::displayNameForId(id);
-    displayName_ = displayName.isEmpty() ? id : displayName;
+    QString displayName = ItemDefinitionRegistry::displayNameForId(rawId);
+    if (displayName.isEmpty()) {
+        displayName = ItemDefinitionRegistry::displayNameForId(id_);
+    }
+    displayName_ = displayName.isEmpty() ? (id_.isEmpty() ? rawId : id_) : displayName;
 }
 
 bool InventoryGridWidget::InventoryCell::supportsAmount() const
@@ -1038,6 +1061,7 @@ void InventoryGridWidget::InventoryCell::setEmpty()
     amountLabel_->setText(QString());
     amountLabel_->show();
     displayName_ = QString();
+    id_ = QString();
 }
 
 void InventoryGridWidget::InventoryCell::mousePressEvent(QMouseEvent *event)

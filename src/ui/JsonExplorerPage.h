@@ -10,9 +10,11 @@
 #include "core/LosslessJsonDocument.h"
 
 class QPlainTextEdit;
+class QPushButton;
 class QStandardItem;
 class QStandardItemModel;
 class QTreeView;
+class QLineEdit;
 
 class JsonExplorerPage : public QWidget
 {
@@ -29,6 +31,7 @@ public:
     bool saveAs(const QString &filePath, QString *errorMessage = nullptr);
     bool exportJson(const QString &filePath, QString *errorMessage = nullptr) const;
     bool hasUnsavedChanges() const;
+    void clearLoadedSave();
 
     void expandAll();
     void collapseAll();
@@ -56,11 +59,17 @@ private:
 
     void showFindDialog();
     void performFind(const QString &text, bool backward, bool wrap, bool caseSensitive, bool wholeWord, bool useRegex);
+    void performTreeSearch(bool backward);
+    bool itemMatchesTreeSearch(QStandardItem *item, const QString &needle) const;
+    void collectTreeItems(QStandardItem *item, QList<QStandardItem *> &outItems);
 
     void ensureMappingLoaded();
     bool syncRootFromLossless(QString *errorMessage = nullptr);
 
     QTreeView *tree_ = nullptr;
+    QLineEdit *treeSearchField_ = nullptr;
+    QPushButton *treeSearchPrevButton_ = nullptr;
+    QPushButton *treeSearchNextButton_ = nullptr;
     QPlainTextEdit *editor_ = nullptr;
     QStandardItemModel *model_ = nullptr;
 

@@ -17,6 +17,8 @@ public:
     void setInventory(const QString &title, const QJsonArray &slotsArray,
                       const QJsonArray &validSlots, const QJsonArray &specialSlots = QJsonArray());
     void setCommitHandler(const std::function<void(const QJsonArray &, const QJsonArray &, const QJsonArray &)> &handler);
+    void setShowIds(bool show);
+    bool showIds() const { return showIds_; }
     QString title() const { return title_; }
     static int preferredGridWidth();
     static int preferredGridHeight(int rows);
@@ -56,6 +58,7 @@ private:
         bool hasItem() const { return !item_.isEmpty(); }
         bool supportsAmount() const;
         QString displayName() const { return displayName_; }
+        QString itemId() const { return id_; }
 
     protected:
         void mousePressEvent(QMouseEvent *event) override;
@@ -83,6 +86,7 @@ private:
         bool slotEnabled_ = true;
         QJsonObject item_;
         QString displayName_;
+        QString id_;
         QLabel *amountLabel_ = nullptr;
         QLabel *iconLabel_ = nullptr;
     };
@@ -113,4 +117,5 @@ private:
     QGridLayout *grid_ = nullptr;
     QLabel *nameOverlay_ = nullptr;
     std::function<void(const QJsonArray &, const QJsonArray &, const QJsonArray &)> commitHandler_;
+    bool showIds_ = false;
 };

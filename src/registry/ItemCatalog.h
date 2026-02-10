@@ -28,6 +28,7 @@ private:
     static void ensureLoaded();
     static void loadCatalog();
     static void parseProductTable(QHash<QString, ItemEntry> &entries);
+    static void parseBasePartProductTable(QHash<QString, ItemEntry> &entries);
     static void parseSubstanceTable(QHash<QString, ItemEntry> &entries);
     static void parseTechnologyTable(QHash<QString, ItemEntry> &entries);
     static void parseProceduralTechnologyTable(QHash<QString, ItemEntry> &entries);

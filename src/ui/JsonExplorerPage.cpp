@@ -2,10 +2,9 @@
 
 #include "core/JsonMapper.h"
 #include "core/ResourceLocator.h"
-#include "core/SaveDecoder.h"
+#include "core/SaveCache.h"
 #include "core/SaveEncoder.h"
 #include "core/SaveJsonModel.h"
-#include "core/Utf8Diagnostics.h"
 
 #include <rapidjson/document.h>
 
@@ -55,14 +54,31 @@ JsonExplorerPage::JsonExplorerPage(QWidget *parent)
     auto *split = new QSplitter(this);
     layout->addWidget(split);
 
-    tree_ = new QTreeView(split);
+    auto *treePane = new QWidget(split);
+    auto *treePaneLayout = new QVBoxLayout(treePane);
+    treePaneLayout->setContentsMargins(0, 0, 0, 0);
+
+    auto *treeSearchLayout = new QHBoxLayout();
+    treeSearchField_ = new QLineEdit(treePane);
+    treeSearchField_->setPlaceholderText(tr("Search nodes..."));
+    treeSearchPrevButton_ = new QPushButton(tr("Prev"), treePane);
+    treeSearchNextButton_ = new QPushButton(tr("Next"), treePane);
+    treeSearchPrevButton_->setFixedWidth(56);
+    treeSearchNextButton_->setFixedWidth(56);
+    treeSearchLayout->addWidget(treeSearchField_);
+    treeSearchLayout->addWidget(treeSearchPrevButton_);
+    treeSearchLayout->addWidget(treeSearchNextButton_);
+    treePaneLayout->addLayout(treeSearchLayout);
+
+    tree_ = new QTreeView(treePane);
     tree_->setHeaderHidden(true);
     tree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    treePaneLayout->addWidget(tree_);
 
     editor_ = new QPlainTextEdit(split);
     editor_->setWordWrapMode(QTextOption::NoWrap);
 
-    split->addWidget(tree_);
+    split->addWidget(treePane);
     split->addWidget(editor_);
     split->setStretchFactor(1, 1);
 
@@ -152,6 +168,16 @@ JsonExplorerPage::JsonExplorerPage(QWidget *parent)
 
     auto *findShortcut = new QShortcut(QKeySequence::Find, editor_);
     connect(findShortcut, &QShortcut::activated, this, &JsonExplorerPage::showFindDialog);
+
+    connect(treeSearchField_, &QLineEdit::returnPressed, this, [this]() {
+        performTreeSearch(false);
+    });
+    connect(treeSearchNextButton_, &QPushButton::clicked, this, [this]() {
+        performTreeSearch(false);
+    });
+    connect(treeSearchPrevButton_, &QPushButton::clicked, this, [this]() {
+        performTreeSearch(true);
+    });
 }
 
 
@@ -174,47 +200,17 @@ bool JsonExplorerPage::loadFromFile(const QString &filePath, QString *errorMessa
     currentFilePath_.clear();
 
     QByteArray contentBytes;
-    if (filePath.endsWith(".hg", Qt::CaseInsensitive)) {
-        qInfo() << "Decoding .hg save file.";
-        contentBytes = SaveDecoder::decodeSaveBytes(filePath, errorMessage);
-    } else {
-        QFile file(filePath);
-        if (!file.open(QIODevice::ReadOnly)) {
-            if (errorMessage) {
-                *errorMessage = tr("Unable to open %1").arg(filePath);
-            }
-            return false;
-        }
-        contentBytes = file.readAll();
+    QJsonDocument doc;
+    std::shared_ptr<LosslessJsonDocument> lossless;
+    if (!SaveCache::loadWithLossless(filePath, &contentBytes, &doc, &lossless, errorMessage)) {
+        return false;
     }
-
     qInfo() << "Loaded raw content length:" << contentBytes.size();
-    if (contentBytes.isEmpty()) {
-        if (errorMessage && errorMessage->isEmpty()) {
-            *errorMessage = tr("No data loaded from %1").arg(filePath);
-        }
-        return false;
-    }
-
-    auto lossless = std::make_shared<LosslessJsonDocument>();
-    if (!lossless->parse(contentBytes, errorMessage)) {
-        return false;
-    }
-
-    bool sanitized = false;
-    QByteArray qtBytes = sanitizeJsonUtf8ForQt(contentBytes, &sanitized);
-    QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(qtBytes, &parseError);
-    if (parseError.error != QJsonParseError::NoError) {
+    if (!lossless) {
         if (errorMessage) {
-            *errorMessage = tr("JSON parse error: %1").arg(parseError.errorString());
+            *errorMessage = tr("Failed to load lossless JSON.");
         }
-        qWarning() << "JSON parse error:" << parseError.errorString();
-        logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
         return false;
-    }
-    if (sanitized) {
-        qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
     }
 
     qInfo() << "JSON parse ok. isObject=" << doc.isObject() << "isArray=" << doc.isArray();
@@ -328,6 +324,26 @@ bool JsonExplorerPage::exportJson(const QString &filePath, QString *errorMessage
 bool JsonExplorerPage::hasUnsavedChanges() const
 {
     return !modifiedItems_.isEmpty();
+}
+
+void JsonExplorerPage::clearLoadedSave()
+{
+    currentFilePath_.clear();
+    rootDoc_ = QJsonDocument();
+    losslessDoc_.reset();
+    modifiedItems_.clear();
+    originalValues_.clear();
+    reverseMapping_.clear();
+    currentItem_ = nullptr;
+    if (tree_->selectionModel()) {
+        tree_->selectionModel()->clearSelection();
+    }
+    model_->clear();
+    model_->appendRow(new QStandardItem(tr("Open a save file to begin.")));
+    if (treeSearchField_) {
+        treeSearchField_->clear();
+    }
+    editor_->setPlainText(tr("// No save loaded."));
 }
 
 void JsonExplorerPage::expandAll()
@@ -1034,6 +1050,123 @@ void JsonExplorerPage::performFind(const QString &text, bool backward, bool wrap
     } else {
         emit statusMessage(tr("No matches for \"%1\"").arg(text));
     }
+}
+
+bool JsonExplorerPage::itemMatchesTreeSearch(QStandardItem *item, const QString &needle) const
+{
+    if (!item || needle.isEmpty()) {
+        return false;
+    }
+    QString label = item->text();
+    if (label.endsWith('*')) {
+        label.chop(1);
+    }
+    return label.toLower().contains(needle);
+}
+
+void JsonExplorerPage::collectTreeItems(QStandardItem *item, QList<QStandardItem *> &outItems)
+{
+    if (!item) {
+        return;
+    }
+
+    outItems.append(item);
+    QVariantList path = item->data(kPathRole).toList();
+    QJsonValue value = valueAtPath(path);
+    if (!item->data(kPopulatedRole).toBool() && (value.isObject() || value.isArray())) {
+        populateChildren(item);
+        item->setData(true, kPopulatedRole);
+    }
+
+    for (int row = 0; row < item->rowCount(); ++row) {
+        collectTreeItems(item->child(row), outItems);
+    }
+}
+
+void JsonExplorerPage::performTreeSearch(bool backward)
+{
+    if (!model_ || model_->rowCount() == 0) {
+        return;
+    }
+
+    const QString needle = treeSearchField_ ? treeSearchField_->text().trimmed().toLower() : QString();
+    if (needle.isEmpty()) {
+        emit statusMessage(tr("Enter a node search term."));
+        return;
+    }
+
+    QStandardItem *root = model_->item(0, 0);
+    if (!root) {
+        return;
+    }
+
+    QList<QStandardItem *> allItems;
+    allItems.reserve(2048);
+    collectTreeItems(root, allItems);
+    if (allItems.isEmpty()) {
+        return;
+    }
+
+    QList<int> matchIndices;
+    matchIndices.reserve(allItems.size());
+    for (int i = 0; i < allItems.size(); ++i) {
+        if (itemMatchesTreeSearch(allItems.at(i), needle)) {
+            matchIndices.append(i);
+        }
+    }
+
+    if (matchIndices.isEmpty()) {
+        emit statusMessage(tr("No matching nodes for \"%1\"").arg(needle));
+        return;
+    }
+
+    int currentPos = -1;
+    QModelIndex currentIndex = tree_->currentIndex();
+    if (currentIndex.isValid()) {
+        QStandardItem *current = model_->itemFromIndex(currentIndex);
+        currentPos = allItems.indexOf(current);
+    }
+
+    int chosen = -1;
+    if (backward) {
+        for (int i = matchIndices.size() - 1; i >= 0; --i) {
+            if (matchIndices.at(i) < currentPos) {
+                chosen = matchIndices.at(i);
+                break;
+            }
+        }
+        if (chosen < 0) {
+            chosen = matchIndices.last();
+        }
+    } else {
+        for (int i = 0; i < matchIndices.size(); ++i) {
+            if (matchIndices.at(i) > currentPos) {
+                chosen = matchIndices.at(i);
+                break;
+            }
+        }
+        if (chosen < 0) {
+            chosen = matchIndices.first();
+        }
+    }
+
+    QStandardItem *target = allItems.value(chosen);
+    if (!target) {
+        return;
+    }
+
+    QModelIndex targetIndex = target->index();
+    QModelIndex parent = targetIndex.parent();
+    while (parent.isValid()) {
+        tree_->expand(parent);
+        parent = parent.parent();
+    }
+    tree_->setCurrentIndex(targetIndex);
+    tree_->scrollTo(targetIndex, QAbstractItemView::PositionAtCenter);
+    emit statusMessage(tr("Node match %1/%2 for \"%3\"")
+                           .arg(matchIndices.indexOf(chosen) + 1)
+                           .arg(matchIndices.size())
+                           .arg(needle));
 }
 
 void JsonExplorerPage::ensureMappingLoaded()

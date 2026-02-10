@@ -9,6 +9,7 @@
 class QCheckBox;
 class QComboBox;
 class QLineEdit;
+class QPushButton;
 class QScrollArea;
 class LosslessJsonDocument;
 
@@ -24,10 +25,14 @@ class ShipManagerPage : public QWidget
 public:
     explicit ShipManagerPage(QWidget *parent = nullptr);
     bool loadFromFile(const QString &filePath, QString *errorMessage);
+    bool loadFromPrepared(const QString &filePath, const QJsonDocument &doc,
+                          const std::shared_ptr<LosslessJsonDocument> &losslessDoc,
+                          QString *errorMessage = nullptr);
     bool saveChanges(QString *errorMessage);
     bool hasLoadedSave() const;
     bool hasUnsavedChanges() const;
     const QString &currentFilePath() const;
+    void clearLoadedSave();
 
 signals:
     void statusMessage(const QString &message);
@@ -37,6 +42,8 @@ private:
     void updateActiveContext();
     void rebuildShipList();
     void setActiveShip(int index);
+    void importShip();
+    void exportShip();
 
     QJsonObject activePlayerState() const;
     QJsonArray shipOwnershipArray() const;
@@ -80,6 +87,8 @@ private:
     QComboBox *classCombo_ = nullptr;
     QLineEdit *seedField_ = nullptr;
     QCheckBox *useOldColours_ = nullptr;
+    QPushButton *importButton_ = nullptr;
+    QPushButton *exportButton_ = nullptr;
 
     QLineEdit *healthField_ = nullptr;
     QLineEdit *shieldField_ = nullptr;

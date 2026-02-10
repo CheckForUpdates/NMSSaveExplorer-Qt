@@ -34,10 +34,16 @@ public:
             | static_cast<int>(InventorySection::StorageManager)));
 
     bool loadFromFile(const QString &filePath, QString *errorMessage = nullptr);
+    bool loadFromPrepared(const QString &filePath, const QJsonDocument &doc,
+                          const std::shared_ptr<LosslessJsonDocument> &losslessDoc,
+                          QString *errorMessage = nullptr);
     bool hasLoadedSave() const;
     bool hasUnsavedChanges() const;
     const QString &currentFilePath() const;
     bool saveChanges(QString *errorMessage = nullptr);
+    void clearLoadedSave();
+    void setShowIds(bool show);
+    bool showIds() const { return showIds_; }
     
     static QJsonValue valueAtPath(const QJsonValue &root, const QVariantList &path);
     static QJsonValue setValueAtPath(const QJsonValue &root, const QVariantList &path, int depth,
@@ -77,8 +83,9 @@ private:
     void addExpeditionTab();
     void addSettlementTab();
     void addStorageManagerTab();
-    void applyValueAtPath(const QVariantList &path, const QJsonValue &value);
+    void applyValueAtPath(const QVariantList &path, const QJsonValue &value, bool deferSync = false);
     void applyDiffAtPath(const QVariantList &path, const QJsonValue &current, const QJsonValue &updated);
+    void finalizeDeferredSync();
 
     QWidget *buildCurrencyRow(const QString &labelText, const QString &jsonKey,
                               const QString &iconId, const QVariantList &playerPath,
@@ -108,6 +115,7 @@ private:
     bool hasUnsavedChanges_ = false;
     bool usingExpeditionContext_ = false;
     InventorySections sections_;
+    bool showIds_ = false;
 
     int selectedShipIndex_ = 0;
     int selectedMultitoolIndex_ = 0;

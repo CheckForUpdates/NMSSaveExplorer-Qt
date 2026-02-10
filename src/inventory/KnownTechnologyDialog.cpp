@@ -4,10 +4,13 @@
 #include "registry/IconRegistry.h"
 #include "registry/ItemCatalog.h"
 #include "registry/ItemDefinitionRegistry.h"
+#include "ui/LoadingOverlay.h"
 
 #include <algorithm>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDomDocument>
+#include <QEventLoop>
 #include <QFile>
 #include <QHeaderView>
 #include <QLineEdit>
@@ -365,6 +368,7 @@ KnownTechnologyDialog::KnownTechnologyDialog(const QJsonArray &knownTech, QWidge
     searchRow->addStretch();
     layout->addLayout(searchRow);
     layout->addWidget(table_);
+    loadingOverlay_ = new LoadingOverlay(this);
 
     connect(addButton_, &QPushButton::clicked, this, &KnownTechnologyDialog::addTechnology);
     connect(removeButton_, &QPushButton::clicked, this, &KnownTechnologyDialog::removeSelected);
@@ -517,7 +521,9 @@ void KnownTechnologyDialog::addTechnology()
     for (const QString &selected : addIds) {
         knownIds_.append(selected);
     }
+    showBusyOverlay(tr("Please wait..."));
     rebuildTable();
+    hideBusyOverlay();
     hasChanges_ = true;
     emit knownTechChanged(updatedTech());
 }
@@ -591,7 +597,9 @@ void KnownTechnologyDialog::removeSelected()
         }
     }
     knownIds_ = filtered;
+    showBusyOverlay(tr("Please wait..."));
     rebuildTable();
+    hideBusyOverlay();
     refreshRemoveEnabled();
     hasChanges_ = true;
     emit knownTechChanged(updatedTech());
@@ -617,5 +625,21 @@ void KnownTechnologyDialog::filterTable(const QString &text)
         }
         bool match = needle.isEmpty() || textValue.toLower().contains(needle);
         table_->setRowHidden(row, !match);
+    }
+}
+
+void KnownTechnologyDialog::showBusyOverlay(const QString &message)
+{
+    if (!loadingOverlay_) {
+        return;
+    }
+    loadingOverlay_->showMessage(message);
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+}
+
+void KnownTechnologyDialog::hideBusyOverlay()
+{
+    if (loadingOverlay_) {
+        loadingOverlay_->hide();
     }
 }

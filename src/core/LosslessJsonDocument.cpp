@@ -189,3 +189,10 @@ bool LosslessJsonDocument::setValueAtPath(const QVariantList &path, const QJsonV
     }
     return false;
 }
+
+std::shared_ptr<LosslessJsonDocument> LosslessJsonDocument::clone() const
+{
+    auto copy = std::make_shared<LosslessJsonDocument>();
+    copy->doc_.CopyFrom(doc_, copy->doc_.GetAllocator());
+    return copy;
+}

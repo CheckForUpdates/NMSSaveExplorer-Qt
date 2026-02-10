@@ -1,13 +1,14 @@
 #include "MainWindow.h"
 
 #include "core/LosslessJsonDocument.h"
-#include "core/SaveDecoder.h"
-#include "core/Utf8Diagnostics.h"
+#include "core/SaveCache.h"
 #include "inventory/InventoryEditorPage.h"
 #include "inventory/InventoryGridWidget.h"
 #include "inventory/KnownTechnologyPage.h"
 #include "inventory/KnownProductPage.h"
 #include "registry/ItemCatalog.h"
+#include "registry/ItemDefinitionRegistry.h"
+#include "registry/LocalizationRegistry.h"
 #include "settlement/SettlementManagerPage.h"
 #include "ship/ShipManagerPage.h"
 #include "ui/BackupsPage.h"
@@ -58,13 +59,15 @@ const char *kPageCorvette = "corvette";
 const char *kPageBackups = "backups";
 const char *kPageKnownTechnology = "known-technology";
 const char *kPageKnownProduct = "known-product";
+const char *kPageMaterialLookup = "material-lookup";
 
 class MenuIndentDelegate : public QStyledItemDelegate
 {
 public:
-    explicit MenuIndentDelegate(int leftPadding, QObject *parent = nullptr)
+    explicit MenuIndentDelegate(int leftPadding, int perLevelIndent = 0, QObject *parent = nullptr)
         : QStyledItemDelegate(parent)
         , leftPadding_(leftPadding)
+        , perLevelIndent_(perLevelIndent)
     {
     }
 
@@ -72,7 +75,7 @@ public:
                const QModelIndex &index) const override
     {
         QStyleOptionViewItem opt(option);
-        opt.rect.adjust(leftPadding_, 0, 0, 0);
+        opt.rect.adjust(leftPadding_ + depthIndent(index), 0, 0, 0);
         QStyledItemDelegate::paint(painter, opt, index);
     }
 
@@ -80,12 +83,24 @@ public:
                    const QModelIndex &index) const override
     {
         QSize size = QStyledItemDelegate::sizeHint(option, index);
-        size.rwidth() += leftPadding_;
+        size.rwidth() += leftPadding_ + depthIndent(index);
         return size;
     }
 
 private:
+    int depthIndent(const QModelIndex &index) const
+    {
+        int depth = 0;
+        QModelIndex parent = index.parent();
+        while (parent.isValid()) {
+            ++depth;
+            parent = parent.parent();
+        }
+        return depth * perLevelIndent_;
+    }
+
     int leftPadding_ = 0;
+    int perLevelIndent_ = 0;
 };
 
 }
@@ -111,7 +126,7 @@ void MainWindow::buildUi()
     sectionTree_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     sectionTree_->setIndentation(0);
     sectionTree_->setRootIsDecorated(false);
-    sectionTree_->setItemDelegate(new MenuIndentDelegate(12, sectionTree_));
+    sectionTree_->setItemDelegate(new MenuIndentDelegate(12, 12, sectionTree_));
     {
         QFont menuFont = sectionTree_->font();
         menuFont.setPointSize(menuFont.pointSize() + 2);
@@ -139,7 +154,7 @@ void MainWindow::buildUi()
         homeSeparator->setSizeHint(0, QSize(0, 8));
     }
 
-    auto *corvetteItem = new QTreeWidgetItem(QStringList() << tr("Corvette Manager"));
+    auto *corvetteItem = new QTreeWidgetItem(QStringList() << tr("Frigates"));
     corvetteItem->setData(0, Qt::UserRole, kPageCorvette);
     sectionTree_->addTopLevelItem(corvetteItem);
 
@@ -178,6 +193,10 @@ void MainWindow::buildUi()
     auto *storageItem = new QTreeWidgetItem(QStringList() << tr("Storage Manager"));
     storageItem->setData(0, Qt::UserRole, kPageStorage);
     sectionTree_->addTopLevelItem(storageItem);
+
+    auto *materialLookupItem = new QTreeWidgetItem(QStringList() << tr("Material Lookup"));
+    materialLookupItem->setData(0, Qt::UserRole, kPageMaterialLookup);
+    sectionTree_->addTopLevelItem(materialLookupItem);
 
     stackedPages_ = new QStackedWidget(mainSplitter_);
 
@@ -286,6 +305,12 @@ void MainWindow::buildUi()
                     openKnownTechnologyEditor();
                 } else if (key == kPageKnownProduct) {
                     openKnownProductEditor();
+                } else if (key == kPageMaterialLookup) {
+                    openMaterialLookup();
+                    if (previous) {
+                        QSignalBlocker blocker(sectionTree_);
+                        sectionTree_->setCurrentItem(previous);
+                    }
                 } else {
                     selectPage(key);
                 }
@@ -351,6 +376,8 @@ void MainWindow::buildUi()
 
     (void)QtConcurrent::run([]() {
         ItemCatalog::warmup();
+        (void)ItemDefinitionRegistry::allDefinitions();
+        (void)LocalizationRegistry::resolveToken(QStringLiteral("UI_PERK_POSITIVE_TITLE"));
     });
 
     shipManagerPage_->setSizePolicy(settlementPage_->sizePolicy());
@@ -364,12 +391,17 @@ void MainWindow::buildMenus()
     QAction *saveAsAction = fileMenu->addAction(tr("Save As..."));
     QAction *exportAction = fileMenu->addAction(tr("Export JSON..."));
     QAction *backupsAction = fileMenu->addAction(tr("Backups"));
+    QAction *materialLookupAction = fileMenu->addAction(tr("Material Lookup..."));
     fileMenu->addSeparator();
     QAction *exitAction = fileMenu->addAction(tr("Exit"));
 
     auto *viewMenu = menuBar()->addMenu(tr("View"));
     QAction *expandAction = viewMenu->addAction(tr("Expand All"));
     QAction *collapseAction = viewMenu->addAction(tr("Collapse All"));
+
+    auto *inventoryMenu = menuBar()->addMenu(tr("Inventories"));
+    QAction *showIdsAction = inventoryMenu->addAction(tr("Show IDs"));
+    showIdsAction->setCheckable(true);
 
     auto *helpMenu = menuBar()->addMenu(tr("Help"));
     QAction *logAction = helpMenu->addAction(tr("Open Log Folder"));
@@ -411,13 +443,33 @@ void MainWindow::buildMenus()
         selectPage(kPageBackups);
         refreshBackupsPage();
     });
+    connect(materialLookupAction, &QAction::triggered, this, &MainWindow::openMaterialLookup);
     connect(exitAction, &QAction::triggered, this, &QWidget::close);
 
     connect(expandAction, &QAction::triggered, jsonPage_, &JsonExplorerPage::expandAll);
     connect(collapseAction, &QAction::triggered, jsonPage_, &JsonExplorerPage::collapseAll);
 
+    connect(showIdsAction, &QAction::toggled, this, [this](bool show) {
+        if (inventoryPage_) {
+            inventoryPage_->setShowIds(show);
+        }
+        if (currenciesPage_) {
+            currenciesPage_->setShowIds(show);
+        }
+        if (expeditionPage_) {
+            expeditionPage_->setShowIds(show);
+        }
+        if (storageManagerPage_) {
+            storageManagerPage_->setShowIds(show);
+        }
+        const auto grids = findChildren<InventoryGridWidget *>();
+        for (auto *grid : grids) {
+            grid->setShowIds(show);
+        }
+    });
+
     connect(logAction, &QAction::triggered, this, []() {
-        const QString logDir = QStringLiteral("/home/lotso/Documents/dev/NMS/NMSSaveExplorer-Qt");
+        const QString logDir = QStringLiteral("~/");
         QDesktopServices::openUrl(QUrl::fromLocalFile(logDir));
     });
 
@@ -429,6 +481,10 @@ void MainWindow::buildMenus()
 
 void MainWindow::refreshSaveSlots()
 {
+    if (!confirmRefreshUnload()) {
+        return;
+    }
+    unloadCurrentSave();
     saveSlots_ = SaveGameLocator::discoverSaveSlots();
     welcomePage_->setSlots(saveSlots_);
     setStatus(saveSlots_.isEmpty() ? tr("No save slots detected.")
@@ -570,64 +626,54 @@ const SaveSlot *MainWindow::findSlotForPath(const QString &path) const
     return nullptr;
 }
 
+void MainWindow::loadSaveInBackground(
+    const QString &path, const QString &statusText,
+    const std::function<void(const LoadResult &)> &onLoaded)
+{
+    if (path.isEmpty() || loadingWatcher_.isRunning()) {
+        return;
+    }
+
+    loadingOverlay_->showMessage(statusText);
+    auto loadTask = [path]() {
+        LoadResult result;
+        QByteArray content;
+        if (!SaveCache::loadWithLossless(path, &content, &result.doc, &result.lossless, &result.error)) {
+            return result;
+        }
+        return result;
+    };
+
+    connect(&loadingWatcher_, &QFutureWatcher<LoadResult>::finished, this,
+            [this, onLoaded]() {
+                loadingOverlay_->hide();
+                LoadResult result = loadingWatcher_.result();
+                if (!result.error.isEmpty() || result.doc.isNull() || !result.lossless) {
+                    setStatus(result.error.isEmpty() ? tr("Failed to load save data.") : result.error);
+                    return;
+                }
+                onLoaded(result);
+            },
+            Qt::SingleShotConnection);
+
+    loadingWatcher_.setFuture(QtConcurrent::run(loadTask));
+}
+
 void MainWindow::openJsonEditor()
 {
     if (!ensureSaveLoaded()) {
         return;
     }
 
-    if (loadingWatcher_.isRunning()) {
-        return;
-    }
-
-    loadingOverlay_->showMessage(tr("Decoding save file, please wait..."));
-
-    auto loadTask = [path = currentSaveFile_]() {
-        QString error;
-        QByteArray content = SaveDecoder::decodeSaveBytes(path, &error);
-        
-        LoadResult result;
-        if (!content.isEmpty()) {
-            result.lossless = std::make_shared<LosslessJsonDocument>();
-            if (!result.lossless->parse(content, &error)) {
-                result.error = error;
-                return result;
-            }
-            bool sanitized = false;
-            QByteArray qtBytes = sanitizeJsonUtf8ForQt(content, &sanitized);
-            QJsonParseError parseError;
-            result.doc = QJsonDocument::fromJson(qtBytes, &parseError);
-            if (parseError.error != QJsonParseError::NoError) {
-                result.error = QObject::tr("JSON parse error: %1").arg(parseError.errorString());
-                logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
-            }
-            if (sanitized) {
-                qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
-            }
-        }
-        result.error = error;
-        return result;
-    };
-
-    connect(&loadingWatcher_, &QFutureWatcher<LoadResult>::finished, this, [this]() {
-        loadingOverlay_->hide();
-        LoadResult result = loadingWatcher_.result();
-        QJsonDocument doc = result.doc;
-        QString error = result.error;
-
-        if (!error.isEmpty() || doc.isNull()) {
-            setStatus(error.isEmpty() ? tr("Failed to load JSON") : error);
-            return;
-        }
-
-        jsonPage_->setRootDoc(doc, currentSaveFile_, result.lossless);
+    const QString path = currentSaveFile_;
+    loadSaveInBackground(path, tr("Decoding save file, please wait..."), [this, path](const LoadResult &result) {
+        jsonPage_->setRootDoc(result.doc, path, result.lossless);
+        currentSaveFile_ = path;
         welcomePage_->setSaveEnabled(jsonPage_->hasUnsavedChanges());
         welcomePage_->setLoadedSavePath(currentSaveFile_);
         updateSaveWatcher(currentSaveFile_);
         selectPage(kPageJson);
-    }, Qt::SingleShotConnection);
-
-    loadingWatcher_.setFuture(QtConcurrent::run(loadTask));
+    });
 }
 
 void MainWindow::openInventoryEditor()
@@ -651,16 +697,18 @@ void MainWindow::openInventoryEditor()
     }
     QString path = currentSaveFile_;
 
-    QString error;
-    if (!inventoryPage_->loadFromFile(path, &error)) {
-        setStatus(error);
-        return;
-    }
-    currentSaveFile_ = path;
-    updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(inventoryPage_->hasUnsavedChanges());
-    welcomePage_->setLoadedSavePath(currentSaveFile_);
-    selectPage(kPageInventory);
+    loadSaveInBackground(path, tr("Loading inventories..."), [this, path](const LoadResult &result) {
+        QString error;
+        if (!inventoryPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+            setStatus(error.isEmpty() ? tr("Failed to load Inventories.") : error);
+            return;
+        }
+        currentSaveFile_ = path;
+        updateSaveWatcher(currentSaveFile_);
+        welcomePage_->setSaveEnabled(inventoryPage_->hasUnsavedChanges());
+        welcomePage_->setLoadedSavePath(currentSaveFile_);
+        selectPage(kPageInventory);
+    });
 }
 
 void MainWindow::openCurrenciesEditor()
@@ -684,16 +732,18 @@ void MainWindow::openCurrenciesEditor()
     }
     QString path = currentSaveFile_;
 
-    QString error;
-    if (!currenciesPage_->loadFromFile(path, &error)) {
-        setStatus(error);
-        return;
-    }
-    currentSaveFile_ = path;
-    updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(currenciesPage_->hasUnsavedChanges());
-    welcomePage_->setLoadedSavePath(currentSaveFile_);
-    selectPage(kPageCurrencies);
+    loadSaveInBackground(path, tr("Loading currencies..."), [this, path](const LoadResult &result) {
+        QString error;
+        if (!currenciesPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+            setStatus(error.isEmpty() ? tr("Failed to load Currencies.") : error);
+            return;
+        }
+        currentSaveFile_ = path;
+        updateSaveWatcher(currentSaveFile_);
+        welcomePage_->setSaveEnabled(currenciesPage_->hasUnsavedChanges());
+        welcomePage_->setLoadedSavePath(currentSaveFile_);
+        selectPage(kPageCurrencies);
+    });
 }
 
 void MainWindow::openExpeditionEditor()
@@ -717,16 +767,18 @@ void MainWindow::openExpeditionEditor()
     }
     QString path = currentSaveFile_;
 
-    QString error;
-    if (!expeditionPage_->loadFromFile(path, &error)) {
-        setStatus(error);
-        return;
-    }
-    currentSaveFile_ = path;
-    updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(expeditionPage_->hasUnsavedChanges());
-    welcomePage_->setLoadedSavePath(currentSaveFile_);
-    selectPage(kPageExpedition);
+    loadSaveInBackground(path, tr("Loading expedition data..."), [this, path](const LoadResult &result) {
+        QString error;
+        if (!expeditionPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+            setStatus(error.isEmpty() ? tr("Failed to load Expedition.") : error);
+            return;
+        }
+        currentSaveFile_ = path;
+        updateSaveWatcher(currentSaveFile_);
+        welcomePage_->setSaveEnabled(expeditionPage_->hasUnsavedChanges());
+        welcomePage_->setLoadedSavePath(currentSaveFile_);
+        selectPage(kPageExpedition);
+    });
 }
 
 void MainWindow::openStorageManager()
@@ -751,16 +803,18 @@ void MainWindow::openStorageManager()
     }
     QString path = currentSaveFile_;
 
-    QString error;
-    if (!storageManagerPage_->loadFromFile(path, &error)) {
-        setStatus(error);
-        return;
-    }
-    currentSaveFile_ = path;
-    updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(storageManagerPage_->hasUnsavedChanges());
-    welcomePage_->setLoadedSavePath(currentSaveFile_);
-    selectPage(kPageStorage);
+    loadSaveInBackground(path, tr("Loading storage manager..."), [this, path](const LoadResult &result) {
+        QString error;
+        if (!storageManagerPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+            setStatus(error.isEmpty() ? tr("Failed to load Storage Manager.") : error);
+            return;
+        }
+        currentSaveFile_ = path;
+        updateSaveWatcher(currentSaveFile_);
+        welcomePage_->setSaveEnabled(storageManagerPage_->hasUnsavedChanges());
+        welcomePage_->setLoadedSavePath(currentSaveFile_);
+        selectPage(kPageStorage);
+    });
 }
 
 void MainWindow::openSettlementManager()
@@ -793,17 +847,19 @@ void MainWindow::openSettlementManager()
         return;
     }
 
-    QString error;
-    if (!settlementPage_->loadFromFile(path, &error)) {
-        setStatus(error);
-        return;
-    }
-    currentSaveFile_ = path;
-    maybeBackupOnLoad(currentSaveFile_);
-    updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(settlementPage_->hasUnsavedChanges());
-    welcomePage_->setLoadedSavePath(currentSaveFile_);
-    selectPage(kPageSettlement);
+    loadSaveInBackground(path, tr("Loading settlement manager..."), [this, path](const LoadResult &result) {
+        QString error;
+        if (!settlementPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+            setStatus(error.isEmpty() ? tr("Failed to load Settlement Manager.") : error);
+            return;
+        }
+        currentSaveFile_ = path;
+        maybeBackupOnLoad(currentSaveFile_);
+        updateSaveWatcher(currentSaveFile_);
+        welcomePage_->setSaveEnabled(settlementPage_->hasUnsavedChanges());
+        welcomePage_->setLoadedSavePath(currentSaveFile_);
+        selectPage(kPageSettlement);
+    });
 }
 
 void MainWindow::openShipManager()
@@ -829,21 +885,23 @@ void MainWindow::openShipManager()
         }
     }
 
-    QString error;
-    if (!shipManagerPage_->loadFromFile(path, &error)) {
-        setStatus(error);
-        return;
-    }
-    currentSaveFile_ = path;
-    updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(shipManagerPage_->hasUnsavedChanges());
-    welcomePage_->setLoadedSavePath(currentSaveFile_);
-    selectPage(kPageShip);
+    loadSaveInBackground(path, tr("Loading ship manager..."), [this, path](const LoadResult &result) {
+        QString error;
+        if (!shipManagerPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+            setStatus(error.isEmpty() ? tr("Failed to load Ship Manager.") : error);
+            return;
+        }
+        currentSaveFile_ = path;
+        updateSaveWatcher(currentSaveFile_);
+        welcomePage_->setSaveEnabled(shipManagerPage_->hasUnsavedChanges());
+        welcomePage_->setLoadedSavePath(currentSaveFile_);
+        selectPage(kPageShip);
+    });
 }
 
 void MainWindow::openCorvetteManager()
 {
-    if (!confirmLeaveJsonEditor(tr("Corvette Manager"))) {
+    if (!confirmLeaveJsonEditor(tr("Frigates"))) {
         return;
     }
     if (!ensureSaveLoaded()) {
@@ -857,23 +915,25 @@ void MainWindow::openCorvetteManager()
         return;
     }
     if (corvetteManagerPage_->hasLoadedSave() && corvetteManagerPage_->hasUnsavedChanges()) {
-        if (!confirmDiscardOrSave(tr("Corvette Manager"), [this](QString *error) {
+        if (!confirmDiscardOrSave(tr("Frigates"), [this](QString *error) {
                 return corvetteManagerPage_->saveChanges(error);
             })) {
             return;
         }
     }
 
-    QString error;
-    if (!corvetteManagerPage_->loadFromFile(path, &error)) {
-        setStatus(error);
-        return;
-    }
-    currentSaveFile_ = path;
-    updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(corvetteManagerPage_->hasUnsavedChanges());
-    welcomePage_->setLoadedSavePath(currentSaveFile_);
-    selectPage(kPageCorvette);
+    loadSaveInBackground(path, tr("Loading frigates..."), [this, path](const LoadResult &result) {
+        QString error;
+        if (!corvetteManagerPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+            setStatus(error.isEmpty() ? tr("Failed to load Frigates.") : error);
+            return;
+        }
+        currentSaveFile_ = path;
+        updateSaveWatcher(currentSaveFile_);
+        welcomePage_->setSaveEnabled(corvetteManagerPage_->hasUnsavedChanges());
+        welcomePage_->setLoadedSavePath(currentSaveFile_);
+        selectPage(kPageCorvette);
+    });
 }
 
 void MainWindow::openMaterialLookup()
@@ -905,16 +965,18 @@ void MainWindow::openKnownTechnologyEditor()
         }
     }
 
-    QString error;
-    if (!knownTechnologyPage_->loadFromFile(path, &error)) {
-        setStatus(error);
-        return;
-    }
-    currentSaveFile_ = path;
-    updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(knownTechnologyPage_->hasUnsavedChanges());
-    welcomePage_->setLoadedSavePath(currentSaveFile_);
-    selectPage(kPageKnownTechnology);
+    loadSaveInBackground(path, tr("Loading known technology..."), [this, path](const LoadResult &result) {
+        QString error;
+        if (!knownTechnologyPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+            setStatus(error.isEmpty() ? tr("Failed to load Known Technology.") : error);
+            return;
+        }
+        currentSaveFile_ = path;
+        updateSaveWatcher(currentSaveFile_);
+        welcomePage_->setSaveEnabled(knownTechnologyPage_->hasUnsavedChanges());
+        welcomePage_->setLoadedSavePath(currentSaveFile_);
+        selectPage(kPageKnownTechnology);
+    });
 }
 
 void MainWindow::openKnownProductEditor()
@@ -940,16 +1002,18 @@ void MainWindow::openKnownProductEditor()
         }
     }
 
-    QString error;
-    if (!knownProductPage_->loadFromFile(path, &error)) {
-        setStatus(error);
-        return;
-    }
-    currentSaveFile_ = path;
-    updateSaveWatcher(currentSaveFile_);
-    welcomePage_->setSaveEnabled(knownProductPage_->hasUnsavedChanges());
-    welcomePage_->setLoadedSavePath(currentSaveFile_);
-    selectPage(kPageKnownProduct);
+    loadSaveInBackground(path, tr("Loading known products..."), [this, path](const LoadResult &result) {
+        QString error;
+        if (!knownProductPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+            setStatus(error.isEmpty() ? tr("Failed to load Known Products.") : error);
+            return;
+        }
+        currentSaveFile_ = path;
+        updateSaveWatcher(currentSaveFile_);
+        welcomePage_->setSaveEnabled(knownProductPage_->hasUnsavedChanges());
+        welcomePage_->setLoadedSavePath(currentSaveFile_);
+        selectPage(kPageKnownProduct);
+    });
 }
 
 void MainWindow::saveChanges()
@@ -1030,6 +1094,7 @@ void MainWindow::saveChanges()
         return;
     }
     ignoreNextFileChange_ = true;
+    SaveCache::clear();
     updateHomeSaveEnabled();
     setStatus(tr("Saved changes."));
 }
@@ -1184,6 +1249,70 @@ void MainWindow::setStatus(const QString &text)
 {
     qInfo() << "Status bar:" << text;
     statusLabel_->setText(text);
+}
+
+bool MainWindow::confirmRefreshUnload()
+{
+    if (!hasPendingChanges() && !syncPending_) {
+        return true;
+    }
+
+    QMessageBox::StandardButton response = QMessageBox::warning(
+        this,
+        tr("Unsaved Changes"),
+        tr("Refreshing will unload the current save and discard pending changes.\n"
+           "Do you want to continue?"),
+        QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    return response == QMessageBox::Discard;
+}
+
+void MainWindow::unloadCurrentSave()
+{
+    if (currentSaveFile_.isEmpty()) {
+        return;
+    }
+
+    SaveCache::clear();
+    currentSaveFile_.clear();
+    updateSaveWatcher(QString());
+    if (jsonPage_) {
+        jsonPage_->clearLoadedSave();
+    }
+    if (inventoryPage_) {
+        inventoryPage_->clearLoadedSave();
+    }
+    if (currenciesPage_) {
+        currenciesPage_->clearLoadedSave();
+    }
+    if (expeditionPage_) {
+        expeditionPage_->clearLoadedSave();
+    }
+    if (storageManagerPage_) {
+        storageManagerPage_->clearLoadedSave();
+    }
+    if (settlementPage_) {
+        settlementPage_->clearLoadedSave();
+    }
+    if (shipManagerPage_) {
+        shipManagerPage_->clearLoadedSave();
+    }
+    if (corvetteManagerPage_) {
+        corvetteManagerPage_->clearLoadedSave();
+    }
+    if (knownTechnologyPage_) {
+        knownTechnologyPage_->clearLoadedSave();
+    }
+    if (knownProductPage_) {
+        knownProductPage_->clearLoadedSave();
+    }
+    welcomePage_->setSaveEnabled(false);
+    welcomePage_->setLoadedSavePath(QString());
+    syncPending_ = false;
+    syncUndoAvailable_ = false;
+    pendingSync_ = PendingSync();
+    welcomePage_->setSyncState(syncPending_, syncUndoAvailable_);
+    selectPage(kPageHome);
 }
 
 bool MainWindow::ensureSaveLoaded()
@@ -1356,7 +1485,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
         }});
     }
     if (corvetteManagerPage_->hasLoadedSave() && corvetteManagerPage_->hasUnsavedChanges()) {
-        pending.append({tr("Corvette Manager"), [this](QString *error) {
+        pending.append({tr("Frigates"), [this](QString *error) {
             return corvetteManagerPage_->saveChanges(error);
         }});
     }

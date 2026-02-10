@@ -12,6 +12,7 @@
 
 namespace {
 const char *kProductTable = "data/nms_reality_gcproducttable.MXML";
+const char *kBasePartProductTable = "data/nms_basepartproducts.MXML";
 const char *kSubstanceTable = "data/nms_reality_gcsubstancetable.MXML";
 const char *kTechnologyTable = "data/nms_reality_gctechnologytable.MXML";
 const char *kDefinitionPath = "localisation_map.json";
@@ -265,6 +266,7 @@ int main(int argc, char *argv[])
 
     QHash<QString, ItemEntry> entries;
     parseProductTable(root.filePath(kProductTable), entries);
+    parseProductTable(root.filePath(kBasePartProductTable), entries);
     parseSubstanceTable(root.filePath(kSubstanceTable), entries);
     parseTechnologyTable(root.filePath(kTechnologyTable), entries);
 

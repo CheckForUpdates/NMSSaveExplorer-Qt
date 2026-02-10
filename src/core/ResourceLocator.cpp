@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QProcessEnvironment>
 
@@ -37,6 +38,15 @@ QString ResourceLocator::resolveResource(const QString &relativePath)
 
 QString ResourceLocator::findResourcesRoot()
 {
+    static bool loggedResource = false;
+    if (QFile::exists(QStringLiteral(":/resources/mapping.json"))) {
+        if (!loggedResource) {
+            loggedResource = true;
+            qInfo() << "ResourceLocator using bundled resources.";
+        }
+        return QStringLiteral(":/resources");
+    }
+
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     QString overrideRoot = env.value(kEnvResourceRoot);
     if (!overrideRoot.isEmpty()) {

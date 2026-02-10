@@ -26,8 +26,12 @@ void LoadingOverlay::setMessage(const QString &message)
 void LoadingOverlay::showMessage(const QString &message)
 {
     message_ = message;
+    if (auto *parentWidget = qobject_cast<QWidget *>(parent())) {
+        setGeometry(parentWidget->rect());
+    }
     show();
     raise();
+    update();
 }
 
 void LoadingOverlay::paintEvent(QPaintEvent *event)

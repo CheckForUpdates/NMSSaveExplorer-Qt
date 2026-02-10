@@ -1,9 +1,8 @@
 #include "inventory/KnownTechnologyPage.h"
 
-#include "core/SaveDecoder.h"
+#include "core/SaveCache.h"
 #include "core/SaveEncoder.h"
 #include "core/SaveJsonModel.h"
-#include "core/Utf8Diagnostics.h"
 #include "inventory/InventoryEditorPage.h"
 #include "inventory/KnownTechnologyDialog.h"
 
@@ -12,7 +11,6 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QJsonParseError>
 #include <QVBoxLayout>
 
 namespace
@@ -33,48 +31,27 @@ KnownTechnologyPage::KnownTechnologyPage(QWidget *parent)
 bool KnownTechnologyPage::loadFromFile(const QString &filePath, QString *errorMessage)
 {
     QByteArray contentBytes;
-    if (filePath.endsWith(".hg", Qt::CaseInsensitive)) {
-        contentBytes = SaveDecoder::decodeSaveBytes(filePath, errorMessage);
-    } else {
-        QFile file(filePath);
-        if (!file.open(QIODevice::ReadOnly)) {
-            if (errorMessage) {
-                *errorMessage = tr("Unable to open %1").arg(filePath);
-            }
-            return false;
-        }
-        contentBytes = file.readAll();
-    }
-
-    if (contentBytes.isEmpty()) {
-        if (errorMessage && errorMessage->isEmpty()) {
-            *errorMessage = tr("No data loaded from %1").arg(filePath);
-        }
+    QJsonDocument doc;
+    std::shared_ptr<LosslessJsonDocument> lossless;
+    if (!SaveCache::loadWithLossless(filePath, &contentBytes, &doc, &lossless, errorMessage)) {
         return false;
     }
+    return loadFromPrepared(filePath, doc, lossless, errorMessage);
+}
 
-    auto lossless = std::make_shared<LosslessJsonDocument>();
-    if (!lossless->parse(contentBytes, errorMessage)) {
-        return false;
-    }
-
-    bool sanitized = false;
-    QByteArray qtBytes = sanitizeJsonUtf8ForQt(contentBytes, &sanitized);
-    QJsonParseError parseError;
-    QJsonDocument doc = QJsonDocument::fromJson(qtBytes, &parseError);
-    if (parseError.error != QJsonParseError::NoError) {
+bool KnownTechnologyPage::loadFromPrepared(
+    const QString &filePath, const QJsonDocument &doc,
+    const std::shared_ptr<LosslessJsonDocument> &losslessDoc, QString *errorMessage)
+{
+    if (!losslessDoc) {
         if (errorMessage) {
-            *errorMessage = tr("JSON parse error: %1").arg(parseError.errorString());
+            *errorMessage = tr("Failed to load lossless JSON.");
         }
-        logJsonUtf8Error(qtBytes, static_cast<int>(parseError.offset));
         return false;
-    }
-    if (sanitized) {
-        qWarning() << "Sanitized invalid UTF-8 bytes for Qt JSON parser.";
     }
 
     rootDoc_ = doc;
-    losslessDoc_ = lossless;
+    losslessDoc_ = losslessDoc;
     currentFilePath_ = filePath;
     hasUnsavedChanges_ = false;
     if (!syncRootFromLossless(errorMessage)) {
@@ -149,6 +126,20 @@ bool KnownTechnologyPage::saveChanges(QString *errorMessage)
     }
     hasUnsavedChanges_ = false;
     return true;
+}
+
+void KnownTechnologyPage::clearLoadedSave()
+{
+    currentFilePath_.clear();
+    rootDoc_ = QJsonDocument();
+    losslessDoc_.reset();
+    hasUnsavedChanges_ = false;
+    usingExpeditionContext_ = false;
+    if (editor_) {
+        layout()->removeWidget(editor_);
+        editor_->deleteLater();
+        editor_ = nullptr;
+    }
 }
 
 void KnownTechnologyPage::updateActiveContext()
