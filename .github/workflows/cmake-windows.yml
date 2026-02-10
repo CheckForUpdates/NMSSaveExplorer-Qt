@@ -11,6 +11,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          lfs: true
+          submodules: recursive
 
       - name: MSVC Dev Cmd
         uses: ilammy/msvc-dev-cmd@v1
@@ -20,7 +23,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: 6.6.3
+          version: 6.10.1
           arch: win64_msvc2022_64
           cache: true
 

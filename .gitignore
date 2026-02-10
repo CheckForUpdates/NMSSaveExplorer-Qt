@@ -11,7 +11,3 @@
 *.tlog
 *.recipe
 *.cache
-
-# Excluded resource payloads
-/src/resources/data/
-/src/resources/icons/
