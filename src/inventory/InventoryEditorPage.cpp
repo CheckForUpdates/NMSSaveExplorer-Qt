@@ -293,7 +293,7 @@ void InventoryEditorPage::rebuildTabs()
         {
             descriptors.append(descriptor);
         }
-        if (resolveCorvetteCache(descriptor))
+        if (resolveFrigateCache(descriptor))
         {
             descriptors.append(descriptor);
         }
@@ -861,7 +861,7 @@ bool InventoryEditorPage::resolveFreighter(InventoryDescriptor &out) const
     return true;
 }
 
-bool InventoryEditorPage::resolveCorvetteCache(InventoryDescriptor &out) const
+bool InventoryEditorPage::resolveFrigateCache(InventoryDescriptor &out) const
 {
     QVariantList basePath = playerBasePath();
     QVariantList inventoryPath = basePath;
@@ -885,7 +885,7 @@ bool InventoryEditorPage::resolveCorvetteCache(InventoryDescriptor &out) const
     if (!inventoryObj.contains(slotsKey)) {
         return false;
     }
-    out.name = tr("Corvette Cache");
+    out.name = tr("Frigate Cache");
     out.slotsPath = inventoryPath;
     out.slotsPath << slotsKey;
     out.validPath = inventoryPath;

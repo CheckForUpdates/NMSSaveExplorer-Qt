@@ -11,10 +11,10 @@
 #include <algorithm>
 
 namespace {
-const char *kProductTable = "data/nms_reality_gcproducttable.MXML";
-const char *kBasePartProductTable = "data/nms_basepartproducts.MXML";
-const char *kSubstanceTable = "data/nms_reality_gcsubstancetable.MXML";
-const char *kTechnologyTable = "data/nms_reality_gctechnologytable.MXML";
+const char *kProductTable = "data/NMS_REALITY_GCPRODUCTTABLE.MXML";
+const char *kBasePartProductTable = "data/NMS_BASEPARTPRODUCTS.MXML";
+const char *kSubstanceTable = "data/NMS_REALITY_GCSUBSTANCETABLE.MXML";
+const char *kTechnologyTable = "data/NMS_REALITY_GCTECHNOLOGYTABLE.MXML";
 const char *kDefinitionPath = "localisation_map.json";
 
 struct ItemDefinition {

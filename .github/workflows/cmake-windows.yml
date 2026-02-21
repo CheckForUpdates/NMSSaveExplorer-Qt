@@ -3,6 +3,7 @@ name: CMake Windows
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
   pull_request:
 
 jobs:
@@ -28,7 +29,15 @@ jobs:
           cache: true
 
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}"
+            if ($version.StartsWith("v")) { $version = $version.Substring(1) }
+            cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DNMS_VERSION=$version
+          } else {
+            cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          }
 
       - name: Build
         run: cmake --build build --config Release

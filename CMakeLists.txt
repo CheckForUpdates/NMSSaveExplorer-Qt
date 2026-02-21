@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
-project(NMSSaveExplorer-Qt LANGUAGES C CXX)
+set(NMS_VERSION "0.1.0" CACHE STRING "NMSSaveExplorer-Qt version")
+project(NMSSaveExplorer-Qt VERSION ${NMS_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,10 +18,10 @@ file(GLOB_RECURSE NMS_SOURCES CONFIGURE_DEPENDS
 file(GLOB NMS_RES_ROOT CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/*.json
 )
-file(GLOB_RECURSE NMS_RES_DATA CONFIGURE_DEPENDS
+file(GLOB_RECURSE NMS_RES_DATA CONFIGURE_DEPENDS LIST_DIRECTORIES false
   ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/*
 )
-file(GLOB_RECURSE NMS_RES_ICONS CONFIGURE_DEPENDS
+file(GLOB_RECURSE NMS_RES_ICONS CONFIGURE_DEPENDS LIST_DIRECTORIES false
   ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/icons/*
 )
 
@@ -43,10 +44,10 @@ add_custom_command(
           --resources ${CMAKE_CURRENT_SOURCE_DIR}/src/resources
           --output ${ITEM_CATALOG_OUTPUT}
   DEPENDS ItemCatalogBuilder
-          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/nms_reality_gcproducttable.MXML
-          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/nms_basepartproducts.MXML
-          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/nms_reality_gcsubstancetable.MXML
-          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/nms_reality_gctechnologytable.MXML
+          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/NMS_REALITY_GCPRODUCTTABLE.MXML
+          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/NMS_BASEPARTPRODUCTS.MXML
+          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/NMS_REALITY_GCSUBSTANCETABLE.MXML
+          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/NMS_REALITY_GCTECHNOLOGYTABLE.MXML
           ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/localisation_map.json
   COMMENT "Generating cached item catalog"
 )
@@ -82,7 +83,7 @@ endif()
 
 set(CPACK_PACKAGE_NAME "NMSSaveExplorer-Qt")
 set(CPACK_PACKAGE_VENDOR "NMSSaveExplorer-Qt")
-set(CPACK_PACKAGE_VERSION "0.1.0")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
 set(CPACK_GENERATOR "ZIP")
 if(APPLE)
   list(APPEND CPACK_GENERATOR "DragNDrop")
