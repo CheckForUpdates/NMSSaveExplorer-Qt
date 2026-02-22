@@ -1,6 +1,8 @@
 # Build outputs
+__pycache__/
 /build/
 /win-build/
+/winbuild/
 
 # Generated binaries and debug artifacts (common on Windows builds)
 *.exe
@@ -11,3 +13,20 @@
 *.tlog
 *.recipe
 *.cache
+*.log
+
+# Resources
+# 1. Ignore EVERYTHING in resources
+/src/resources/*
+
+# 2. Un-ignore the .json files in resources
+!/src/resources/*.json
+
+# 3. Un-ignore the data folder itself so Git can look inside
+!/src/resources/data/
+
+# 4. Ignore EVERYTHING inside the data folder
+/src/resources/data/*
+
+# 5. Un-ignore ONLY the .MXML files inside the data folder
+!/src/resources/data/*.MXML

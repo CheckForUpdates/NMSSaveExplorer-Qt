@@ -401,8 +401,11 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
         QAction *deleteAction = menu.addAction(tr("Delete Item"));
         QAction *addAction = menu.addAction(tr("Add Item..."));
         QAction *enableSlotAction = nullptr;
+        QAction *disableSlotAction = nullptr;
         if (!slotEnabled) {
             enableSlotAction = menu.addAction(tr("Enable Slot"));
+        } else {
+            disableSlotAction = menu.addAction(tr("Disable Slot"));
         }
         menu.addSeparator();
         QAction *repairAction = nullptr;
@@ -440,6 +443,9 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
         if (superchargeAction) {
             superchargeAction->setEnabled(slotEnabled);
         }
+        if (disableSlotAction) {
+            disableSlotAction->setEnabled(!cell->hasItem());
+        }
 
         QAction *selected = menu.exec(cell->mapToGlobal(pos));
         if (selected == infoAction) {
@@ -454,6 +460,8 @@ void InventoryGridWidget::attachContextMenu(InventoryCell *cell)
             addItem(cell);
         } else if (enableSlotAction && selected == enableSlotAction) {
             enableSlot(cell);
+        } else if (disableSlotAction && selected == disableSlotAction) {
+            disableSlot(cell);
         } else if (repairAction && selected == repairAction) {
             repairItem(cell);
         } else if (repairAllAction && selected == repairAllAction) {
@@ -744,6 +752,90 @@ void InventoryGridWidget::enableSlot(InventoryCell *cell)
     }
     rebuild();
     emit statusMessage(tr("Slot enabled — remember to Save!"));
+}
+
+void InventoryGridWidget::disableSlot(InventoryCell *cell)
+{
+    if (!cell) {
+        return;
+    }
+    if (cell->hasItem()) {
+        emit statusMessage(tr("Cannot disable a slot with an item."));
+        return;
+    }
+
+    int x = cell->position().x;
+    int y = cell->position().y;
+    if (!isSlotEnabled(x, y)) {
+        return;
+    }
+
+    QJsonArray nextValidSlots;
+    if (validSlots_.isEmpty()) {
+        int maxX = kGridWidth - 1;
+        int maxY = 0;
+
+        auto updateMax = [&](const QJsonObject &idx) {
+            if (idx.isEmpty()) {
+                return;
+            }
+            maxX = qMax(maxX, indexValue(idx, ">Qh", "X"));
+            maxY = qMax(maxY, indexValue(idx, "XJ>", "Y"));
+        };
+
+        for (const QJsonValue &value : slots_) {
+            if (!value.isObject()) {
+                continue;
+            }
+            QJsonObject item = value.toObject();
+            QJsonValue idxValue = item.value("3ZH");
+            if (idxValue.isUndefined()) {
+                idxValue = item.value("Index");
+            }
+            updateMax(idxValue.toObject());
+        }
+        for (const QJsonValue &value : specialSlots_) {
+            if (!value.isObject()) {
+                continue;
+            }
+            updateMax(specialSlotIndexValue(value.toObject()));
+        }
+
+        for (int yy = 0; yy <= maxY; ++yy) {
+            for (int xx = 0; xx <= maxX; ++xx) {
+                if (xx == x && yy == y) {
+                    continue;
+                }
+                QJsonObject idx;
+                idx.insert(">Qh", xx);
+                idx.insert("XJ>", yy);
+                nextValidSlots.append(idx);
+            }
+        }
+    } else {
+        for (const QJsonValue &value : validSlots_) {
+            QJsonObject idx = validSlotIndexValue(value);
+            if (indexValue(idx, ">Qh", "X") == x && indexValue(idx, "XJ>", "Y") == y) {
+                continue;
+            }
+            nextValidSlots.append(value);
+        }
+    }
+
+    for (int i = specialSlots_.size() - 1; i >= 0; --i) {
+        QJsonObject special = specialSlots_.at(i).toObject();
+        QJsonObject idx = specialSlotIndexValue(special);
+        if (indexValue(idx, ">Qh", "X") == x && indexValue(idx, "XJ>", "Y") == y) {
+            specialSlots_.removeAt(i);
+        }
+    }
+
+    validSlots_ = nextValidSlots;
+    if (commitHandler_) {
+        commitHandler_(slots_, validSlots_, specialSlots_);
+    }
+    rebuild();
+    emit statusMessage(tr("Slot disabled — remember to Save!"));
 }
 
 void InventoryGridWidget::toggleSupercharged(InventoryCell *cell)

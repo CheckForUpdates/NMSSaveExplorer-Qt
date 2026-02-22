@@ -103,6 +103,7 @@ private:
     void deleteItem(InventoryCell *cell);
     void addItem(InventoryCell *cell);
     void enableSlot(InventoryCell *cell);
+    void disableSlot(InventoryCell *cell);
     void toggleSupercharged(InventoryCell *cell);
     void repairItem(InventoryCell *cell);
     void repairAllDamaged();

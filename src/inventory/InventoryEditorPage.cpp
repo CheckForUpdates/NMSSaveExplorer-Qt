@@ -168,6 +168,7 @@ bool InventoryEditorPage::loadFromPrepared(
     selectedShipIndex_ = player.value("aBE").toInt(0);
     
     selectedMultitoolIndex_ = player.value("j3E").toInt(0);
+    selectedVehicleIndex_ = player.value("5sx").toInt(0);
 
     rebuildTabs();
 
@@ -246,6 +247,7 @@ void InventoryEditorPage::clearLoadedSave()
     usingExpeditionContext_ = false;
     selectedShipIndex_ = 0;
     selectedMultitoolIndex_ = 0;
+    selectedVehicleIndex_ = 0;
 }
 
 void InventoryEditorPage::setShowIds(bool show)
@@ -285,13 +287,19 @@ void InventoryEditorPage::rebuildTabs()
         {
             descriptors.append(descriptor);
         }
+
         if (resolveMultitool(descriptor))
         {
             descriptors.append(descriptor);
         }
-        if (resolveFreighter(descriptor))
-        {
-            descriptors.append(descriptor);
+        if (resolveVehicle(descriptor)) {
+            descriptors << descriptor;
+        }
+        if (resolveVehicleTech(descriptor)) {
+            descriptors << descriptor;
+        }
+        if (resolveFreighter(descriptor)) {
+            descriptors << descriptor;
         }
         if (resolveFrigateCache(descriptor))
         {
@@ -328,13 +336,14 @@ void InventoryEditorPage::rebuildTabs()
         scroll->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
         scroll->setWidget(grid);
         
-        if (desc.type == InventoryType::Ship || desc.type == InventoryType::Multitool) {
+        if (desc.type == InventoryType::Ship || desc.type == InventoryType::Multitool || desc.type == InventoryType::Vehicle) {
             auto *container = new QWidget(this);
             auto *vbox = new QVBoxLayout(container);
             vbox->setContentsMargins(10, 10, 10, 10);
             
             auto *hbox = new QHBoxLayout();
-            auto *label = new QLabel(desc.type == InventoryType::Ship ? tr("Select Ship:") : tr("Select Multitool:"), container);
+            auto *label = new QLabel(desc.type == InventoryType::Ship ? tr("Select Ship:") : 
+                                     desc.type == InventoryType::Multitool ? tr("Select Multitool:") : tr("Select Vehicle:"), container);
             label->setStyleSheet("font-weight: bold; color: #00aaff;");
             hbox->addWidget(label);
             
@@ -350,6 +359,9 @@ void InventoryEditorPage::rebuildTabs()
             if (desc.type == InventoryType::Ship) {
                 listPath << "@Cs";
                 list = valueAtPath(rootDoc_.object(), listPath).toArray();
+            } else if (desc.type == InventoryType::Vehicle) {
+                listPath << "P;m";
+                list = valueAtPath(rootDoc_.object(), listPath).toArray();
             } else {
                 QVariantList mPath = findMultitoolPath(rootDoc_.object(), playerBasePath());
                 QJsonValue mVal = valueAtPath(rootDoc_.object(), mPath);
@@ -361,7 +373,8 @@ void InventoryEditorPage::rebuildTabs()
             }
             
             int actualIndex = -1;
-            int currentSelection = (desc.type == InventoryType::Ship ? selectedShipIndex_ : selectedMultitoolIndex_);
+            int currentSelection = (desc.type == InventoryType::Ship ? selectedShipIndex_ : 
+                                    desc.type == InventoryType::Multitool ? selectedMultitoolIndex_ : selectedVehicleIndex_);
 
             for (int i = 0; i < list.size(); ++i) {
                 QJsonObject item = list.at(i).toObject();
@@ -389,6 +402,29 @@ void InventoryEditorPage::rebuildTabs()
                     }
                     bool emptySeed = isExplicitlyEmptySeed(s1) || isExplicitlyEmptySeed(s2) || isExplicitlyEmptySeed(s3);
 
+                    if (!hasName && resourceFilename.isEmpty() && emptySeed && !hasSlots) {
+                        continue;
+                    }
+                } else if (desc.type == InventoryType::Vehicle) {
+                    QJsonValue s1 = item.value("3R<"); // ShipSeed
+                    QJsonValue s2 = item.value("@EL"); // Seed (legacy)
+                    QJsonObject resource = item.value("NTx").toObject();
+                    QJsonValue s3 = resource.value("@EL"); // Resource seed
+                    QString resourceFilename = resource.value("93M").toString();
+
+                    bool hasName = !item.value("NKm").toString().isEmpty()
+                                   || !item.value("fH8").toString().isEmpty()
+                                   || !item.value("O=l").toString().isEmpty();
+                    bool hasSlots = false;
+                    if (hasInventorySlots(item)) {
+                        hasSlots = true;
+                    } else {
+                        QJsonObject inv = item.value(";l5").toObject();
+                        QJsonObject tech = item.value("PMT").toObject();
+                        hasSlots = hasInventorySlots(inv) || hasInventorySlots(tech);
+                    }
+                    bool emptySeed = isExplicitlyEmptySeed(s1) || isExplicitlyEmptySeed(s2) || isExplicitlyEmptySeed(s3);
+                    
                     if (!hasName && resourceFilename.isEmpty() && emptySeed && !hasSlots) {
                         continue;
                     }
@@ -425,12 +461,28 @@ void InventoryEditorPage::rebuildTabs()
                             name = QFileInfo(filename).baseName();
                         }
                     }
+                } else if (desc.type == InventoryType::Vehicle) {
+                    name = item.value("NKm").toString(); // Name
+                    if (name.isEmpty()) name = item.value("fH8").toString(); // CustomName
+                    if (name.isEmpty()) name = item.value("O=l").toString(); // ArchivedName
+                    if (name.isEmpty()) {
+                        static const QStringList kVehicleNames = {
+                            tr("Roamer"), tr("Nomad"), tr("Colossus"),
+                            tr("Pilgrim"), tr("Minotaur"), tr("Nautilon")
+                        };
+                        if (i >= 0 && i < kVehicleNames.size()) {
+                            name = kVehicleNames.at(i);
+                        } else {
+                            name = tr("Vehicle %1").arg(i + 1);
+                        }
+                    }
                 } else {
                     name = item.value("NKm").toString(); // Name
                     if (name.isEmpty()) name = item.value("fH8").toString(); // CustomName
                     if (name.isEmpty()) name = item.value("O=l").toString(); // ArchivedName
                 }
-                if (name.isEmpty()) name = (desc.type == InventoryType::Ship ? tr("Ship %1").arg(i+1) : tr("Multitool %1").arg(i+1));
+                if (name.isEmpty()) name = (desc.type == InventoryType::Ship ? tr("Ship %1").arg(i+1) :
+                                            desc.type == InventoryType::Multitool ? tr("Multitool %1").arg(i+1) : tr("Vehicle %1").arg(i+1));
                 
                 combo->addItem(name, i);
                 
@@ -445,13 +497,15 @@ void InventoryEditorPage::rebuildTabs()
                 combo->setCurrentIndex(0);
                 int firstValid = combo->itemData(0).toInt();
                 if (desc.type == InventoryType::Ship) selectedShipIndex_ = firstValid;
-                else selectedMultitoolIndex_ = firstValid;
+                else if (desc.type == InventoryType::Multitool) selectedMultitoolIndex_ = firstValid;
+                else selectedVehicleIndex_ = firstValid;
             }
             
             connect(combo, &QComboBox::currentIndexChanged, this, [this, desc, combo](int index) {
                 int originalIndex = combo->itemData(index).toInt();
                 if (desc.type == InventoryType::Ship) selectedShipIndex_ = originalIndex;
-                else selectedMultitoolIndex_ = originalIndex;
+                else if (desc.type == InventoryType::Multitool) selectedMultitoolIndex_ = originalIndex;
+                else selectedVehicleIndex_ = originalIndex;
                 rebuildTabs();
             });
             
@@ -799,6 +853,98 @@ bool InventoryEditorPage::resolveMultitoolTech(InventoryDescriptor &out) const
     }
     out.name = tr("Multitool Technology");
     out.type = InventoryType::Multitool;
+    out.slotsPath = inventoryPath;
+    out.slotsPath << ":No";
+    out.validPath = inventoryPath;
+    out.validPath << "hl?";
+    out.specialSlotsPath = inventoryPath;
+    out.specialSlotsPath << "MMm";
+    return true;
+}
+
+bool InventoryEditorPage::resolveVehicle(InventoryDescriptor &out) const
+{
+    QVariantList basePath = playerBasePath();
+    QVariantList vPath = basePath;
+    vPath << "P;m";
+    QJsonValue vListVal = valueAtPath(rootDoc_.object(), vPath);
+
+    if (!vListVal.isArray()) {
+        return false;
+    }
+
+    QJsonArray vList = vListVal.toArray();
+    if (vList.isEmpty()) {
+        return false;
+    }
+
+    int idx = (selectedVehicleIndex_ >= 0 && selectedVehicleIndex_ < vList.size()) ? selectedVehicleIndex_ : 0;
+    
+    QVariantList inventoryPath = vPath;
+    inventoryPath << idx;
+
+    QJsonValue vehicleObj = valueAtPath(rootDoc_.object(), inventoryPath);
+    if (!vehicleObj.isObject()) {
+        return false;
+    }
+
+    QJsonObject vItem = vehicleObj.toObject();
+    if (hasInventorySlots(vItem)) {
+        // vehicle already contains slots
+    } else if (vItem.contains(";l5") && hasInventorySlots(vItem.value(";l5").toObject())) {
+        inventoryPath << ";l5";
+    } else {
+        return false;
+    }
+
+    out.name = tr("Vehicle");
+    out.type = InventoryType::Vehicle;
+    out.slotsPath = inventoryPath;
+    out.slotsPath << ":No";
+    out.validPath = inventoryPath;
+    out.validPath << "hl?";
+    out.specialSlotsPath = inventoryPath;
+    out.specialSlotsPath << "MMm";
+    return true;
+}
+
+bool InventoryEditorPage::resolveVehicleTech(InventoryDescriptor &out) const
+{
+    QVariantList basePath = playerBasePath();
+    QVariantList vPath = basePath;
+    vPath << "P;m";
+    QJsonValue vListVal = valueAtPath(rootDoc_.object(), vPath);
+
+    if (!vListVal.isArray()) {
+        return false;
+    }
+
+    QJsonArray vList = vListVal.toArray();
+    if (vList.isEmpty()) {
+        return false;
+    }
+
+    int idx = (selectedVehicleIndex_ >= 0 && selectedVehicleIndex_ < vList.size()) ? selectedVehicleIndex_ : 0;
+    
+    QVariantList inventoryPath = vPath;
+    inventoryPath << idx;
+
+    QJsonValue vehicleObj = valueAtPath(rootDoc_.object(), inventoryPath);
+    if (!vehicleObj.isObject()) {
+        return false;
+    }
+
+    QJsonObject vItem = vehicleObj.toObject();
+    
+    // Vehicles typically have their tech under PMT within their object
+    if (vItem.contains("PMT")) {
+         inventoryPath << "PMT";
+    } else {
+        return false; // No tech available or not unlocked
+    }
+
+    out.name = tr("Vehicle Technology");
+    out.type = InventoryType::Vehicle;
     out.slotsPath = inventoryPath;
     out.slotsPath << ":No";
     out.validPath = inventoryPath;

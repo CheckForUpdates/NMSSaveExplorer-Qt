@@ -56,7 +56,8 @@ private:
     enum class InventoryType {
         Other,
         Ship,
-        Multitool
+        Multitool,
+        Vehicle
     };
 
     struct InventoryDescriptor {
@@ -77,6 +78,8 @@ private:
     bool resolveShipTech(InventoryDescriptor &out) const;
     bool resolveMultitool(InventoryDescriptor &out) const;
     bool resolveMultitoolTech(InventoryDescriptor &out) const;
+    bool resolveVehicle(InventoryDescriptor &out) const;
+    bool resolveVehicleTech(InventoryDescriptor &out) const;
     bool resolveFreighter(InventoryDescriptor &out) const;
     bool resolveFrigateCache(InventoryDescriptor &out) const;
     void addCurrenciesTab();
@@ -119,6 +122,7 @@ private:
 
     int selectedShipIndex_ = 0;
     int selectedMultitoolIndex_ = 0;
+    int selectedVehicleIndex_ = 0;
 };
 
 Q_DECLARE_OPERATORS_FOR_FLAGS(InventoryEditorPage::InventorySections)
