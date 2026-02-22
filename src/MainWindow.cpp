@@ -16,7 +16,7 @@
 #include "ui/MaterialLookupDialog.h"
 #include "ui/WelcomePage.h"
 #include "ui/LoadingOverlay.h"
-#include "corvette/CorvetteManagerPage.h"
+#include "frigate/FrigateManagerPage.h"
 #include <QtConcurrent>
 #include <QAction>
 #include <QAbstractItemView>
@@ -55,7 +55,7 @@ const char *kPageExpedition = "expedition";
 const char *kPageStorage = "storage";
 const char *kPageSettlement = "settlement";
 const char *kPageShip = "ship";
-const char *kPageCorvette = "corvette";
+const char *kPageFrigateTemplate = "frigateTemplate";
 const char *kPageBackups = "backups";
 const char *kPageKnownTechnology = "known-technology";
 const char *kPageKnownProduct = "known-product";
@@ -154,9 +154,9 @@ void MainWindow::buildUi()
         homeSeparator->setSizeHint(0, QSize(0, 8));
     }
 
-    auto *corvetteItem = new QTreeWidgetItem(QStringList() << tr("Frigates"));
-    corvetteItem->setData(0, Qt::UserRole, kPageCorvette);
-    sectionTree_->addTopLevelItem(corvetteItem);
+    auto *frigateTemplateItem = new QTreeWidgetItem(QStringList() << tr("Frigates"));
+    frigateTemplateItem->setData(0, Qt::UserRole, kPageFrigateTemplate);
+    sectionTree_->addTopLevelItem(frigateTemplateItem);
 
     auto *currenciesItem = new QTreeWidgetItem(QStringList() << tr("Currencies"));
     currenciesItem->setData(0, Qt::UserRole, kPageCurrencies);
@@ -210,7 +210,7 @@ void MainWindow::buildUi()
     storageManagerPage_ = new InventoryEditorPage(this, InventoryEditorPage::InventorySection::StorageManager);
     settlementPage_ = new SettlementManagerPage(this);
     shipManagerPage_ = new ShipManagerPage(this);
-    corvetteManagerPage_ = new CorvetteManagerPage(this);
+    frigateManagerPage_ = new FrigateManagerPage(this);
     backupsPage_ = new BackupsPage(this);
     knownTechnologyPage_ = new KnownTechnologyPage(this);
     knownProductPage_ = new KnownProductPage(this);
@@ -221,7 +221,7 @@ void MainWindow::buildUi()
     stackedPages_->addWidget(inventoryPage_);
     stackedPages_->addWidget(settlementPage_);
     stackedPages_->addWidget(shipManagerPage_);
-    stackedPages_->addWidget(corvetteManagerPage_);
+    stackedPages_->addWidget(frigateManagerPage_);
     stackedPages_->addWidget(currenciesPage_);
     stackedPages_->addWidget(expeditionPage_);
     stackedPages_->addWidget(storageManagerPage_);
@@ -289,8 +289,8 @@ void MainWindow::buildUi()
                     openSettlementManager();
                 } else if (key == kPageShip) {
                     openShipManager();
-                } else if (key == kPageCorvette) {
-                    openCorvetteManager();
+                } else if (key == kPageFrigateTemplate) {
+                    openFrigateTemplateManager();
                 } else if (key == kPageJson) {
                     openJsonEditor();
                 } else if (key == kPageInventory) {
@@ -367,7 +367,7 @@ void MainWindow::buildUi()
     connect(storageManagerPage_, &InventoryEditorPage::statusMessage, this, &MainWindow::setStatus);
     connect(settlementPage_, &SettlementManagerPage::statusMessage, this, &MainWindow::setStatus);
     connect(shipManagerPage_, &ShipManagerPage::statusMessage, this, &MainWindow::setStatus);
-    connect(corvetteManagerPage_, &CorvetteManagerPage::statusMessage, this, &MainWindow::setStatus);
+    connect(frigateManagerPage_, &FrigateManagerPage::statusMessage, this, &MainWindow::setStatus);
     connect(knownTechnologyPage_, &KnownTechnologyPage::statusMessage, this, &MainWindow::setStatus);
     connect(knownProductPage_, &KnownProductPage::statusMessage, this, &MainWindow::setStatus);
 
@@ -664,6 +664,10 @@ void MainWindow::openJsonEditor()
     if (!ensureSaveLoaded()) {
         return;
     }
+    if (jsonPage_->hasLoadedSave() && jsonPage_->currentFilePath() == currentSaveFile_) {
+        selectPage(kPageJson);
+        return;
+    }
 
     const QString path = currentSaveFile_;
     loadSaveInBackground(path, tr("Decoding save file, please wait..."), [this, path](const LoadResult &result) {
@@ -899,7 +903,7 @@ void MainWindow::openShipManager()
     });
 }
 
-void MainWindow::openCorvetteManager()
+void MainWindow::openFrigateTemplateManager()
 {
     if (!confirmLeaveJsonEditor(tr("Frigates"))) {
         return;
@@ -909,14 +913,14 @@ void MainWindow::openCorvetteManager()
     }
     QString path = currentSaveFile_;
 
-    if (corvetteManagerPage_->hasLoadedSave()
-        && corvetteManagerPage_->currentFilePath() == currentSaveFile_) {
-        selectPage(kPageCorvette);
+    if (frigateManagerPage_->hasLoadedSave()
+        && frigateManagerPage_->currentFilePath() == currentSaveFile_) {
+        selectPage(kPageFrigateTemplate);
         return;
     }
-    if (corvetteManagerPage_->hasLoadedSave() && corvetteManagerPage_->hasUnsavedChanges()) {
+    if (frigateManagerPage_->hasLoadedSave() && frigateManagerPage_->hasUnsavedChanges()) {
         if (!confirmDiscardOrSave(tr("Frigates"), [this](QString *error) {
-                return corvetteManagerPage_->saveChanges(error);
+                return frigateManagerPage_->saveChanges(error);
             })) {
             return;
         }
@@ -924,15 +928,15 @@ void MainWindow::openCorvetteManager()
 
     loadSaveInBackground(path, tr("Loading frigates..."), [this, path](const LoadResult &result) {
         QString error;
-        if (!corvetteManagerPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
+        if (!frigateManagerPage_->loadFromPrepared(path, result.doc, result.lossless, &error)) {
             setStatus(error.isEmpty() ? tr("Failed to load Frigates.") : error);
             return;
         }
         currentSaveFile_ = path;
         updateSaveWatcher(currentSaveFile_);
-        welcomePage_->setSaveEnabled(corvetteManagerPage_->hasUnsavedChanges());
+        welcomePage_->setSaveEnabled(frigateManagerPage_->hasUnsavedChanges());
         welcomePage_->setLoadedSavePath(currentSaveFile_);
-        selectPage(kPageCorvette);
+        selectPage(kPageFrigateTemplate);
     });
 }
 
@@ -1057,8 +1061,8 @@ void MainWindow::saveChanges()
         saved = settlementPage_->saveChanges(&error);
     } else if (activePage == shipManagerPage_ && shipManagerPage_->hasLoadedSave()) {
         saved = shipManagerPage_->saveChanges(&error);
-    } else if (activePage == corvetteManagerPage_ && corvetteManagerPage_->hasLoadedSave()) {
-        saved = corvetteManagerPage_->saveChanges(&error);
+    } else if (activePage == frigateManagerPage_ && frigateManagerPage_->hasLoadedSave()) {
+        saved = frigateManagerPage_->saveChanges(&error);
     } else if (activePage == currenciesPage_ && currenciesPage_->hasLoadedSave()) {
         saved = currenciesPage_->saveChanges(&error);
     } else if (activePage == expeditionPage_ && expeditionPage_->hasLoadedSave()) {
@@ -1297,8 +1301,8 @@ void MainWindow::unloadCurrentSave()
     if (shipManagerPage_) {
         shipManagerPage_->clearLoadedSave();
     }
-    if (corvetteManagerPage_) {
-        corvetteManagerPage_->clearLoadedSave();
+    if (frigateManagerPage_) {
+        frigateManagerPage_->clearLoadedSave();
     }
     if (knownTechnologyPage_) {
         knownTechnologyPage_->clearLoadedSave();
@@ -1346,7 +1350,7 @@ void MainWindow::selectPage(const QString &key)
         stackedPages_->setCurrentIndex(8);
     } else if (key == kPageBackups) {
         stackedPages_->setCurrentIndex(9);
-    } else if (key == kPageCorvette) {
+    } else if (key == kPageFrigateTemplate) {
         stackedPages_->setCurrentIndex(5);
     } else if (key == kPageKnownTechnology) {
         stackedPages_->setCurrentIndex(10);
@@ -1366,7 +1370,7 @@ bool MainWindow::hasPendingChanges() const
         || (knownProductPage_ && knownProductPage_->hasLoadedSave() && knownProductPage_->hasUnsavedChanges())
         || (settlementPage_ && settlementPage_->hasLoadedSave() && settlementPage_->hasUnsavedChanges())
         || (shipManagerPage_ && shipManagerPage_->hasLoadedSave() && shipManagerPage_->hasUnsavedChanges())
-        || (corvetteManagerPage_ && corvetteManagerPage_->hasLoadedSave() && corvetteManagerPage_->hasUnsavedChanges());
+        || (frigateManagerPage_ && frigateManagerPage_->hasLoadedSave() && frigateManagerPage_->hasUnsavedChanges());
 }
 
 void MainWindow::updateHomeSaveEnabled()
@@ -1397,14 +1401,16 @@ bool MainWindow::confirmLeaveJsonEditor(const QString &nextAction)
     if (!jsonPage_->hasLoadedSave() || !jsonPage_->hasUnsavedChanges()) {
         return true;
     }
-    QMessageBox::StandardButton response = QMessageBox::warning(
-        this,
-        tr("Unsaved JSON Changes"),
-        tr("You have unsaved changes in the JSON Explorer.\n"
-           "Do you want to discard them and open %1?").arg(nextAction),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
-    return response == QMessageBox::Yes;
+    return confirmDiscardOrSave(tr("JSON Explorer"), [this](QString *error) {
+        if (!jsonPage_->saveChanges(error)) {
+            return false;
+        }
+        ignoreNextFileChange_ = true;
+        SaveCache::clear();
+        updateHomeSaveEnabled();
+        setStatus(tr("Saved changes."));
+        return true;
+    });
 }
 
 bool MainWindow::confirmDiscardOrSave(const QString &pageName,
@@ -1484,9 +1490,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
             return shipManagerPage_->saveChanges(error);
         }});
     }
-    if (corvetteManagerPage_->hasLoadedSave() && corvetteManagerPage_->hasUnsavedChanges()) {
+    if (frigateManagerPage_->hasLoadedSave() && frigateManagerPage_->hasUnsavedChanges()) {
         pending.append({tr("Frigates"), [this](QString *error) {
-            return corvetteManagerPage_->saveChanges(error);
+            return frigateManagerPage_->saveChanges(error);
         }});
     }
 

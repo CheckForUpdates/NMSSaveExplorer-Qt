@@ -25,7 +25,7 @@ class ShipManagerPage;
 class WelcomePage;
 class LoadingOverlay;
 class BackupsPage;
-class CorvetteManagerPage;
+class FrigateManagerPage;
 class KnownTechnologyPage;
 class KnownProductPage;
 
@@ -61,7 +61,7 @@ private:
     void openStorageManager();
     void openSettlementManager();
     void openShipManager();
-    void openCorvetteManager();
+    void openFrigateTemplateManager();
     void openMaterialLookup();
     void openKnownTechnologyEditor();
     void openKnownProductEditor();
@@ -106,7 +106,7 @@ private:
     InventoryEditorPage *storageManagerPage_ = nullptr;
     SettlementManagerPage *settlementPage_ = nullptr;
     ShipManagerPage *shipManagerPage_ = nullptr;
-    CorvetteManagerPage *corvetteManagerPage_ = nullptr;
+    FrigateManagerPage *frigateManagerPage_ = nullptr;
     KnownTechnologyPage *knownTechnologyPage_ = nullptr;
     KnownProductPage *knownProductPage_ = nullptr;
     QLabel *statusLabel_ = nullptr;

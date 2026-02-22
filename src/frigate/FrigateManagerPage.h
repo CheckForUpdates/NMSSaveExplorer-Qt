@@ -17,19 +17,13 @@ class QScrollArea;
 class InventoryGridWidget;
 class LosslessJsonDocument;
 
-struct CorvetteEntry {
-    QString fileName;
-    QString name;
-    QJsonValue seed;
-    bool inUse = false;
-};
 
-class CorvetteManagerPage : public QWidget
+class FrigateManagerPage : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit CorvetteManagerPage(QWidget *parent = nullptr);
+    explicit FrigateManagerPage(QWidget *parent = nullptr);
     bool loadFromFile(const QString &filePath, QString *errorMessage);
     bool loadFromPrepared(const QString &filePath, const QJsonDocument &doc,
                           const std::shared_ptr<LosslessJsonDocument> &losslessDoc,
@@ -44,32 +38,20 @@ signals:
     void statusMessage(const QString &message);
 
 private slots:
-    void onImportClicked();
-    void onExportClicked();
-    void onUseClicked();
-    void onCorvetteSelected(int index);
     void onFrigateSelected(int index);
     void onFrigateFieldEdited();
 
 private:
     void buildUi();
-    void rebuildCorvetteList();
     void rebuildFrigateList();
-    void refreshGrids();
     void refreshFrigateEditor();
     void refreshFrigateProgressFields(const QJsonObject &frigate);
-    void loadLocalCorvettes();
-    QString localCorvettesPath() const;
-    
     QJsonObject activePlayerState() const;
-    QVariantList corvetteInventoryPath() const;
-    QVariantList corvetteLayoutPath() const;
     QVariantList fleetFrigatesPath() const;
     QVariantList fleetExpeditionsPath() const;
     QVariantList playerBasePath() const;
     QVariantList playerStatePathForContext(bool expedition) const;
     void updateActiveContext();
-    bool playerHasCorvetteData(bool expedition) const;
     bool playerHasFrigateData(bool expedition) const;
     bool frigateIsOnMission(int frigateIndex) const;
     void updateFrigateAtIndex(int frigateIndex, const std::function<void(QJsonObject &)> &mutator);
@@ -78,14 +60,6 @@ private:
     void applyValueAtPath(const QVariantList &path, const QJsonValue &value);
     bool syncRootFromLossless(QString *errorMessage = nullptr);
 
-    QComboBox *corvetteCombo_ = nullptr;
-    QPushButton *importButton_ = nullptr;
-    QPushButton *exportButton_ = nullptr;
-    QPushButton *useButton_ = nullptr;
-    
-    QTabWidget *tabs_ = nullptr;
-    InventoryGridWidget *inventoryGrid_ = nullptr;
-    InventoryGridWidget *techGrid_ = nullptr;
     QComboBox *frigateCombo_ = nullptr;
     QLineEdit *frigateNameEdit_ = nullptr;
     QComboBox *frigateClassCombo_ = nullptr;
@@ -104,7 +78,6 @@ private:
     QLineEdit *frigateMissionStateEdit_ = nullptr;
     bool updatingFrigateUi_ = false;
 
-    QList<CorvetteEntry> localCorvettes_;
     QJsonDocument rootDoc_;
     std::shared_ptr<LosslessJsonDocument> losslessDoc_;
     QString currentFilePath_;

@@ -27,6 +27,7 @@ public:
     void setRootDoc(const QJsonDocument &doc, const QString &filePath,
                     const std::shared_ptr<LosslessJsonDocument> &losslessDoc);
     bool hasLoadedSave() const;
+    const QString &currentFilePath() const { return currentFilePath_; }
     bool saveChanges(QString *errorMessage = nullptr);
     bool saveAs(const QString &filePath, QString *errorMessage = nullptr);
     bool exportJson(const QString &filePath, QString *errorMessage = nullptr) const;
