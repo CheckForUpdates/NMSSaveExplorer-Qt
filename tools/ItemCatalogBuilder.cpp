@@ -15,7 +15,7 @@ const char *kProductTable = "data/NMS_REALITY_GCPRODUCTTABLE.MXML";
 const char *kBasePartProductTable = "data/NMS_BASEPARTPRODUCTS.MXML";
 const char *kSubstanceTable = "data/NMS_REALITY_GCSUBSTANCETABLE.MXML";
 const char *kTechnologyTable = "data/NMS_REALITY_GCTECHNOLOGYTABLE.MXML";
-const char *kDefinitionPath = "localisation_map.json";
+const char *kDefinitionPath = "localization_map.json";
 
 struct ItemDefinition {
     QString name;

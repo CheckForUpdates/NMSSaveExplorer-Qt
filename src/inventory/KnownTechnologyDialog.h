@@ -10,6 +10,7 @@ class QTableWidget;
 class QPushButton;
 class QLineEdit;
 class LoadingOverlay;
+class QPoint;
 
 class KnownTechnologyDialog : public QWidget
 {
@@ -29,6 +30,8 @@ private:
     void addTechnology();
     void removeSelected();
     void filterTable(const QString &text);
+    void showDetailsFromRowAt(const QPoint &pos);
+    void showDetailForRow(int row);
     QString normalizedId(const QString &value) const;
     void showBusyOverlay(const QString &message);
     void hideBusyOverlay();

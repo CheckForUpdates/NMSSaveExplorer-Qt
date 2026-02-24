@@ -7,7 +7,7 @@
 #include <QJsonObject>
 
 namespace {
-const char *kDefinitionPath = "localisation_map.json";
+const char *kDefinitionPath = "localization_map.json";
 QHash<QString, ItemDefinition> g_definitions;
 bool g_loaded = false;
 }

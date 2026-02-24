@@ -48,7 +48,7 @@ add_custom_command(
           ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/NMS_BASEPARTPRODUCTS.MXML
           ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/NMS_REALITY_GCSUBSTANCETABLE.MXML
           ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/data/NMS_REALITY_GCTECHNOLOGYTABLE.MXML
-          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/localisation_map.json
+          ${CMAKE_CURRENT_SOURCE_DIR}/src/resources/localization_map.json
   COMMENT "Generating cached item catalog"
 )
 add_custom_target(generate_item_catalog DEPENDS ${ITEM_CATALOG_OUTPUT})

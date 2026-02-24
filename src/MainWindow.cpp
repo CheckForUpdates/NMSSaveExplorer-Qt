@@ -272,6 +272,14 @@ void MainWindow::buildUi()
                     refreshBackupsPage();
                     return;
                 }
+                if (key == kPageMaterialLookup) {
+                    openMaterialLookup();
+                    if (previous) {
+                        QSignalBlocker blocker(sectionTree_);
+                        sectionTree_->setCurrentItem(previous);
+                    }
+                    return;
+                }
 
                 if (!ensureSaveLoaded()) {
                     QSignalBlocker blocker(sectionTree_);
@@ -305,12 +313,6 @@ void MainWindow::buildUi()
                     openKnownTechnologyEditor();
                 } else if (key == kPageKnownProduct) {
                     openKnownProductEditor();
-                } else if (key == kPageMaterialLookup) {
-                    openMaterialLookup();
-                    if (previous) {
-                        QSignalBlocker blocker(sectionTree_);
-                        sectionTree_->setCurrentItem(previous);
-                    }
                 } else {
                     selectPage(key);
                 }

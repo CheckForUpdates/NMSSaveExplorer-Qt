@@ -13,9 +13,11 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QHeaderView>
+#include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QMessageBox>
+#include <QPoint>
 #include <QSet>
 #include <QTableWidget>
 #include <QHBoxLayout>
@@ -140,6 +142,60 @@ const QHash<QString, QString> &productCategories()
     return cache;
 }
 
+void showItemDetailPopup(QWidget *parent, const QString &id, const QString &name)
+{
+    QDialog dialog(parent, Qt::Dialog | Qt::FramelessWindowHint);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(8, 8, 8, 8);
+
+    QLabel *iconLabel = new QLabel(&dialog);
+    QPixmap pixmap = IconRegistry::iconForId(id);
+    if (!pixmap.isNull()) {
+        iconLabel->setPixmap(pixmap.scaled(150, 150, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    }
+
+    QLabel *nameLabel = new QLabel(name, &dialog);
+    nameLabel->setAlignment(Qt::AlignCenter);
+
+    layout->addWidget(iconLabel, 0, Qt::AlignCenter);
+    layout->addWidget(nameLabel);
+
+    ItemType type = ItemType::Unknown;
+    QList<ItemEntry> entries = ItemCatalog::itemsForTypes(
+        {ItemType::Substance, ItemType::Product, ItemType::Technology});
+    QString normalizedId = id.startsWith('^') ? id.mid(1) : id;
+    for (const ItemEntry &entry : entries) {
+        if (entry.id.compare(normalizedId, Qt::CaseInsensitive) == 0) {
+            type = entry.type;
+            break;
+        }
+    }
+
+    QString typeLabel;
+    switch (type) {
+    case ItemType::Substance:
+        typeLabel = QObject::tr("Substance");
+        break;
+    case ItemType::Product:
+        typeLabel = QObject::tr("Product");
+        break;
+    case ItemType::Technology:
+        typeLabel = QObject::tr("Technology");
+        break;
+    default:
+        break;
+    }
+    if (!typeLabel.isEmpty()) {
+        QLabel *typeLabelWidget = new QLabel(typeLabel, &dialog);
+        typeLabelWidget->setAlignment(Qt::AlignCenter);
+        layout->addWidget(typeLabelWidget);
+    }
+
+    dialog.resize(180, 200);
+    dialog.exec();
+}
+
 } // namespace
 
 KnownProductDialog::KnownProductDialog(const QJsonArray &knownProducts, QWidget *parent)
@@ -190,6 +246,8 @@ KnownProductDialog::KnownProductDialog(const QJsonArray &knownProducts, QWidget 
         refreshRemoveEnabled();
     });
     connect(searchField_, &QLineEdit::textChanged, this, &KnownProductDialog::filterTable);
+    table_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(table_, &QTableWidget::customContextMenuRequested, this, &KnownProductDialog::showDetailsFromRowAt);
 
     allEntries_ = ItemCatalog::itemsForTypes({ItemType::Product, ItemType::Substance});
     for (ItemEntry &entry : allEntries_) {
@@ -440,6 +498,42 @@ void KnownProductDialog::filterTable(const QString &text)
         bool match = needle.isEmpty() || textValue.toLower().contains(needle);
         table_->setRowHidden(row, !match);
     }
+}
+
+void KnownProductDialog::showDetailsFromRowAt(const QPoint &pos)
+{
+    if (!table_) {
+        return;
+    }
+    QTableWidgetItem *item = table_->itemAt(pos);
+    if (!item) {
+        return;
+    }
+    showDetailForRow(item->row());
+}
+
+void KnownProductDialog::showDetailForRow(int row)
+{
+    if (!table_ || row < 0 || row >= table_->rowCount()) {
+        return;
+    }
+
+    QTableWidgetItem *idItem = table_->item(row, 3);
+    if (!idItem) {
+        return;
+    }
+
+    QString id = idItem->data(Qt::UserRole).toString();
+    if (id.isEmpty()) {
+        id = idItem->text();
+    }
+    if (id.isEmpty()) {
+        return;
+    }
+
+    QTableWidgetItem *nameItem = table_->item(row, 1);
+    const QString name = nameItem ? nameItem->text() : id;
+    showItemDetailPopup(this, id, name);
 }
 
 void KnownProductDialog::showBusyOverlay(const QString &message)

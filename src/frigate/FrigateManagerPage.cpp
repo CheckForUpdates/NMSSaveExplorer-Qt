@@ -511,12 +511,6 @@ bool FrigateManagerPage::loadFromPrepared(
     losslessDoc_ = losslessDoc;
 
     updateActiveContext();
-    if (!playerHasFrigateData(usingExpeditionContext_)) {
-        bool alternate = !usingExpeditionContext_;
-        if (playerHasFrigateData(alternate)) {
-            usingExpeditionContext_ = alternate;
-        }
-    }
     rebuildFrigateList();
     refreshFrigateEditor();
 
@@ -870,20 +864,7 @@ QVariantList FrigateManagerPage::fleetFrigatesPath() const
         out << key;
         return out;
     };
-
-    QVariantList preferred = resolvePath(usingExpeditionContext_);
-    if (!preferred.isEmpty()) {
-        return preferred;
-    }
-    QVariantList alternate = resolvePath(!usingExpeditionContext_);
-    if (!alternate.isEmpty()) {
-        return alternate;
-    }
-    QVariantList discovered;
-    if (findPathToMappedKey(rootDoc_.object(), QStringLiteral("FleetFrigates"), {}, &discovered)) {
-        return discovered;
-    }
-    return {};
+    return resolvePath(usingExpeditionContext_);
 }
 
 QVariantList FrigateManagerPage::fleetExpeditionsPath() const
@@ -902,20 +883,7 @@ QVariantList FrigateManagerPage::fleetExpeditionsPath() const
         out << key;
         return out;
     };
-
-    QVariantList preferred = resolvePath(usingExpeditionContext_);
-    if (!preferred.isEmpty()) {
-        return preferred;
-    }
-    QVariantList alternate = resolvePath(!usingExpeditionContext_);
-    if (!alternate.isEmpty()) {
-        return alternate;
-    }
-    QVariantList discovered;
-    if (findPathToMappedKey(rootDoc_.object(), QStringLiteral("FleetExpeditions"), {}, &discovered)) {
-        return discovered;
-    }
-    return {};
+    return resolvePath(usingExpeditionContext_);
 }
 
 QVariantList FrigateManagerPage::playerStatePathForContext(bool expedition) const
